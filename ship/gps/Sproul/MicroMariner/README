@@ -1,0 +1,14 @@
+*********************************************************************************
+
+M_Mariner/READ_ME
+
+
+These data are Micro Mariner data from the Sproul wet lab 5-10-96 to 5-15-96 Z.
+
+Files with *.log extensions are Micro Mariner log files. Files with *.txt extensions
+are ASCII text versions of the log files. The Micro Mariner time lags UTC by 01:03 
+(i.e. add 1 min 3 sec to Micro Mariner time to get UTC time) (e.g. 18:24:00 Micro
+Mariner translates into 18:25:03 Z).
+
+
+

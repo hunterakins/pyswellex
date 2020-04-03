@@ -1,0 +1,50 @@
+
+		Differential GPS Data Recorded During SWelleEX-96
+		=================================================
+
+System
+
+GPS System: Magellan GPS NAV 500 DLX
+Sampling Rate: Approximately 1 record every 1 to 5 seconds
+Differential Radio Station: 170.175 MHz
+
+Antenna Setup
+
+The Differential Station used was that broadcasting from North Island
+transmitting at 170.175 MHz. An outdoor antenna was used with the VHS
+receiver to ensure differential signal reception at all times. The
+GPS antenna was attached to the starboard rails on the upper (penthouse)
+deck on FLIP. Its altitude was about 6 feet above the deck's floor, which is
+approximately 60 feet above water level.
+
+Recording System
+
+Zenith XT Laptop, running a Procomm-Plus script to create data files 
+every approximately 2 hours (500 Kbytes in size). Due to disk space 
+limitations in the Zenith Laptop, data files were transferred periodically 
+to a Sun Microsystems workstation for storage and further processing.
+
+The Data
+
+A total of 375,583 dgps points were recorded during the experiment. Data
+were recorded starting on 05/08/96 16:52 Z and finishing on 05/19/95
+15:00 Z. There were a few minor interruptions in the beginning of the
+data recording to allow for changes in the recording system (from a 486
+PC to the Zenith Laptop). In addition, DGPS positioning had drop-outs
+every now and then, so at those instances non-differential positioning
+was recorded (regular GPS). Non-differential GPS information were not 
+considered in the processing of these data. The data were stored in 120
+ASCII files.
+
+The average FLIP position was:
+
+ 32 deg 40.250' N
+117 deg 21.635' W
+
+Variance (of Minutes of a Degree):
+
+Latitude --> 0.24485E-05 (std = 0.15648E-02)
+Longitud --> 0.77125E-05 (std = 0.27771E-02)
+
+Martin Olivera
+534-1732
