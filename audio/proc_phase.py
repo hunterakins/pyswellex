@@ -678,7 +678,6 @@ def plot_lin_reg_good(freqs, mins, sensor_ind):
     overlap = {name for name in mcd.CSS4_COLORS
            if "xkcd:" + name in mcd.XKCD_COLORS}
     overlap = sorted(overlap)
-    plt.figure()
     handles = []
     labels = []
     for f, brackets in zip(freqs,mins):
@@ -704,11 +703,35 @@ def plot_lin_reg_good(freqs, mins, sensor_ind):
             err_var = np.var(y_err)/np.sqrt(y_err.size)
             v_var = np.square(1500/2/np.pi/f/60)*err_var
             dom = x+x0
-            x_vals = [dom[0], (dom[0]+dom[-1])/2, dom[-1]]
-            line = plt.errorbar(x_vals, [v_est]*3, [2*np.sqrt(v_var)]*3, color=col,label=str(f))[0]
+#            x_vals = [dom[0], (dom[0]+dom[-1])/2, dom[-1]]
+            x_vals = [(dom[0]+dom[-1]) / 2]
+            # line = plt.errorbar(x_vals, [v_est], [2*np.sqrt(v_var)], color=col,label=str(f))[0]
+            line = plt.scatter(x_vals, [v_est], s=4, color=col,label=str(f))
         handles.append(line)
         labels.append(str(f))
+    plt.ylim([2.2,3])
     plt.legend(handles, labels,loc='upper left')
+
+def plot_resid_good(freq,brackets, sensor_ind):
+    pest =get_pest(f, sensor_ind)
+    dom = 60*np.linspace(6.5, 40, pest.size)
+    dt = dom[1]-dom[0]
+    inds = []
+    size = 0
+    dom_segs,pest_segs = form_good_pest(f, brackets,sensor_ind)
+    for x,y in zip(dom_segs, pest_segs):
+        x0 = x[0]
+        x -= x[0]
+        H = x.reshape(x.size, 1)
+        pinv = np.linalg.inv(H.T@H)@H.T
+        slope = pinv@(y-y[0])
+        y_est = H@slope + y[0]
+        v_est = 1500*(slope / 2 /np.pi / f/60 -1)
+        y_err = y_est - y
+        err_var =np.var(y_err)
+        v_var = np.square(1500/2/np.pi/f/60)*err_var
+        plt.plot(x+x0, y_err)
+        plt.show()
 
 def check_filter(f, brackets, sensor_ind=1):
     pest =get_pest(f, sensor_ind)
@@ -773,9 +796,9 @@ class SelectFromCollection(object):
         ind = np.nonzero(path.contains_points(self.xys))[0]
         self.ind = ind
         self.inds.append([ind[0], ind[-1]])
-        self.fc[:, -1] = self.alpha_other
-        self.fc[self.ind, -1] = 1
-        self.collection.set_facecolors(self.fc)
+#        self.fc[:, -1] = self.alpha_other
+#        self.fc[self.ind, -1] = 1
+#        self.collection.set_facecolors(self.fc)
         self.canvas.draw_idle()
 
     def disconnect(self):
@@ -786,33 +809,30 @@ class SelectFromCollection(object):
 
 if __name__ == '__main__':
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+#    freqs= [148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+
+    sensor = 9
 #    for f in freqs:
 #        print('-------------- ' + str(f) + ' hz')
 #        fig, ax = plt.subplots()
-#        pest =get_pest(f, 3)
+#        pest =get_pest(f, sensor)
 #        dom = np.linspace(6.5, 40, pest.size)
 #        fig.suptitle(str(f))
-#       # compare_to_snr(f, 3)
+##       # compare_to_snr(f, 3)
 #        pts = ax.scatter(dom[::100], detrend(pest[::100]), s=1)
 #        selector = SelectFromCollection(ax, pts)
 #        plt.show()
 #        selector.disconnect()
 #        for x in selector.inds:
 #            print('[' + str(dom[100*x[0]]) + ', ' + str(dom[100*x[1]]) + '],')
-#        
-    
-        
-        
-        
 
-    from indices.sensor3 import mins
-    #mins = mins[:14]
-#    mins = mins[14:]
-#    plot_lin_reg_good(freqs, mins, 3)
+    from indices.sensor9 import mins            
+#    for i, f in enumerate(freqs):
+#        print(f)
+#        brackets = mins[i]
+#        print(brackets)
+#        check_filter(f, brackets, sensor_ind=9)
 
 
-    for i, f in enumerate(freqs):
-        print(f)
-        brackets = mins[i]
-        print(brackets)
-        check_filter(f, brackets, sensor_ind=3)
+    plot_lin_reg_good(freqs[:14],mins[:14],9)
+    plt.show()
