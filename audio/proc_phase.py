@@ -646,6 +646,36 @@ def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
     num_samps = sum([x.size for x in dom_segs])
     return dom_segs, pest_segs
 
+def form_good_alpha(f, brackets, sensor_ind=1, c=1500):
+    """
+    alpha = c*((phi - phi(0))/(2 pi f0) - t)
+    Use the list of good brackets to extract the relevant portions 
+    """
+    pest =get_pest(f, sensor_ind)
+    pest -= pest[0] 
+    dt = 1/1500
+    t = np.linspace(0, (40-6.5)*60, pest.size)
+    dom_min = np.linspace(6.5, 40, pest.size)
+    inds = []
+    t_segs = []
+    alpha_segs = []
+    for bracket in brackets:
+        dm = dom_min[1]-dom_min[0]
+        if bracket[0] > bracket[1]:
+            print(f, bracket)
+            raise(ValueError, 'bracket isn\'t increasing')
+        li = int((bracket[0]-6.5) / dm)
+        ri = int((bracket[1]-6.5) / dm)
+        seg = pest[li:ri]
+        dom_seg = dom_min[li:ri]
+        """ Get time in seconds """
+        t_seg = t[li:ri]
+        alpha_seg= c*(seg / (2*np.pi*f) - t_seg)
+        alpha_segs.append(alpha_seg)
+        t_segs.append(t_seg)
+    return t_segs, alpha_segs
+    
+
 def plot_filtered_pest(freqs, mins, sensor_ind=1):
     color_count = 0
     overlap = {name for name in mcd.CSS4_COLORS
@@ -739,12 +769,15 @@ def check_filter(f, brackets, sensor_ind=1):
     dt = dom[1]-dom[0]
     inds = []
     size = 0
+    fig = plt.figure()
     x,y = form_good_pest(f, brackets,sensor_ind,detrend_flag=True)
     for dom_seg, pest_seg in zip(x,y):
-        line = (plt.plot(dom_seg, pest_seg, label=str(f)))
+        plt.plot(dom_seg, pest_seg)
     plt.xlabel('Time (min)')
     plt.ylabel('Unwrapped phase (radians)')
     plt.show()
+    plt.close(fig)
+    return
 
 
 class SelectFromCollection(object):
@@ -811,7 +844,7 @@ if __name__ == '__main__':
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
 #    freqs= [148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
 
-    sensor = 9
+#    sensor = 12
 #    for f in freqs:
 #        print('-------------- ' + str(f) + ' hz')
 #        fig, ax = plt.subplots()
@@ -826,13 +859,27 @@ if __name__ == '__main__':
 #        for x in selector.inds:
 #            print('[' + str(dom[100*x[0]]) + ', ' + str(dom[100*x[1]]) + '],')
 
-    from indices.sensor9 import mins            
-#    for i, f in enumerate(freqs):
-#        print(f)
-#        brackets = mins[i]
-#        print(brackets)
-#        check_filter(f, brackets, sensor_ind=9)
-
-
-    plot_lin_reg_good(freqs[:14],mins[:14],9)
-    plt.show()
+    from indices.sensor1 import mins            
+#    freqs = freqs[-5:]
+#    mins = mins[-5:]
+    for i, f in enumerate(freqs):
+        print('frequency', f)
+        brackets = mins[i]
+        total_mins = sum([x[1]-x[0] for x in brackets])
+        print('total mins', total_mins)
+        check_filter(f, brackets, sensor_ind=1)
+#
+#
+#    plot_lin_reg_good(freqs[:14],mins[:14],10)
+#    plt.show()
+#    from indices.sensors import mins
+#    for i in range(len(freqs)):
+#        f = freqs[i]
+#        plt.figure()
+#        plt.suptitle('Coverage for ' + str(f))
+#        for sens_mins in mins:
+#            for bracket in sens_mins[i]:
+#                if len(bracket) == 3:
+#                    print(bracket)
+#                plt.plot(bracket, [1]*2)
+#    plt.show()
