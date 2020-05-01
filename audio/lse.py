@@ -2,7 +2,6 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from indices.sensors import freqs, mins
-from indices.reverse_indices import reverse_mins
 from proc_phase import form_good_pest, form_good_alpha, get_pest
 from scipy.signal import detrend
 import pickle
@@ -51,7 +50,7 @@ def form_noise_est(brackets):
         noise_ests.append(freq_ests)
     return noise_ests
 
-def form_alpha_noise_est(brackets,use_pickle=False,c=1500,reverse=True):
+def form_alpha_noise_est(brackets,freqs,use_pickle=False,c=1500):
     """
     Get sample variance of detrended "good segments" in the alpha
     variable
@@ -77,10 +76,12 @@ def form_alpha_noise_est(brackets,use_pickle=False,c=1500,reverse=True):
         freq_ests = []
         for j, freq in enumerate(freqs):
             brackets = sensor_bracket[j]
-            dom_segs, pest_segs = form_good_alpha(freq, brackets, i+1,c,reverse)
+            dom_segs, pest_segs = form_good_alpha(freq, brackets, i+1,c)
             curr_noise_ests = []
             for k in range(len(pest_segs)):
                 dom, seg = dom_segs[k], pest_segs[k]
+                if dom.size == 0:
+                    print(brackets)
                 seg = detrend(seg)
                 noise_var = np.var(seg)
                 curr_noise_ests.append(noise_var)
@@ -101,7 +102,7 @@ def get_Kn(Sigma, h, sigma_sample):
     """ 
     Sh = Sigma@h
     numer = Sh
-    denom = np.square(sigma_sample) + h.T@Sh
+    denom = sigma_sample + h.T@Sh
     Kn = numer/denom
     return Kn
 
@@ -159,9 +160,20 @@ class Bracket:
             f_ind - int
                 index of the frequency in the ''canonical list''
         """
-        self.bracket = bracket
-        self.start = bracket[0] 
-        self.end = bracket[1]
+        """ I had to correct for an error I made in assigning 
+        the minute values to the brackets....
+        I used a domain from 6.5 to 40, but I should've used
+        a domain from 6.5 to 40 - (1/1500 / 60) which
+        is the sampling rate in mins
+        I correc the mins, then use them to get the right index
+        """
+        dm = 1/1500/60
+        self.start_min = 6.5 + (bracket[0]-6.5)/1.0000003316612551
+        self.end_min = 6.5 + (bracket[1]-6.5)/1.0000003316612551
+        """ index of start and end of bracket"""
+        self.start = int((self.start_min-6.5) / dm)
+        self.end = int((self.end_min-6.5) / dm)
+        self.bracket = [self.start, self.end]
         self.sensor = sensor_ind
         self.freq = freq
         self.f_ind = f_ind
@@ -176,8 +188,8 @@ class Bracket:
         """
         self.alpha0 = alpha0
 
-    def get_data(self,c=1500, reverse=True):
-        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.sensor+1, c, reverse)
+    def get_data(self,c=1500):
+        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.sensor+1, c)
         if type(self.alpha0) != type(None):
             x0= alpha_segs[0][0]
             diff = self.alpha0 - x0
@@ -187,13 +199,32 @@ class Bracket:
         return dom_segs[0], alpha_segs[0]
 
     def __repr__(self):
-        return "Bracket for sensor {:d} at frequency {:d} starting at minute {:.2f} and ending at minute {:.2f}".format(self.sensor + 1, self.freq, self.bracket[0], self.bracket[1])
+        return "Bracket for sensor {:d} at frequency {:d} starting at minute {:.2f} and ending at minute {:.2f}".format(self.sensor + 1, self.freq, self.start_min, self.end_min)
 
-def form_first_H(opening_bracks, num_f, df,reverse=False):
+def get_row_sizes(opening_bracks, batch_size):
+    max_ind = batch_size
+    num_rows = 0 # to count total num
+    row_sizes = [] # to hold the size for each bracket
+    for x in opening_bracks:
+        dom, alpha = x.get_data()
+        """ If the bracket is fully contained
+        in the batch chunk, the whole data segment
+        will be used """
+        if x.end < batch_size:
+            num_samps = x.end-x.start
+        else:
+            num_samps = max_ind - x.start 
+        num_rows+=num_samps
+        row_sizes.append(num_samps)
+    return num_rows, row_sizes
+  
+
+def form_first_H(opening_bracks, num_f, df, batch_size):
     """
-    Formthe model for the first batch LS estimate
+    Form the model for the first batch LS estimate
     Input -
         opening_bracks - list of Brackets
+            that open in the opening period
         num_f - int
             number of frequencies to include model
     Output -
@@ -201,18 +232,17 @@ def form_first_H(opening_bracks, num_f, df,reverse=False):
         matrix consisting of big model for all the brackets
         truncated to the smallest bracket
     """
-    """find the size of the smallest bracket
-        and the corresponding domain
-        while we loop through, grab all the samples I will 
-        need for the inverse """
-    ind = np.argmin(np.array([x.bracket[1] for x in opening_bracks]))
-    smallest_brack = opening_bracks[ind]
-    dom,_ =  smallest_brack.get_data(reverse)
-    t = dom
-    dt = t[1]-t[0]
-    T = t.size*dt
-    """ Form mini H"""
-    H = np.ones((dom.size, 2*num_f+1))
+
+    """ First figure out how big H will be"""
+    max_ind = batch_size
+    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size)
+  
+    """ Iterate through the brackets
+    and populate an H model matrix """ 
+    dt = 1/1500
+    t = np.linspace(0, dt*batch_size, batch_size)
+    """ H that contains all possible rows needed """
+    H = np.ones((batch_size, 2*num_f+1))
     H[:,0] = t
     """ Populate the columns with the sines and cosines """
     if num_f > 0:
@@ -221,29 +251,42 @@ def form_first_H(opening_bracks, num_f, df,reverse=False):
             H[:,2*i-1] = vals
             vals = t*np.sin(2*np.pi*i*df*t)
             H[:,2*i] = vals
-    """ Make the big H """
-    big_H = np.ones((t.size*len(opening_bracks), 2*num_f+1))
+    """ Make the big H by selecting the appropriate 
+    row from H"""
+    big_H = np.ones((num_rows, 2*num_f+1))
+    curr_row = 0 # keep track of where to add new values
     for i in range(len(opening_bracks)):
-        big_H[i*t.size:(i+1)*t.size, :] = H
+        curr_brack = opening_bracks[i]
+        start_ind, end_ind = curr_brack.start, curr_brack.end
+        if end_ind > max_ind:
+            end_ind = max_ind
+        row_size = row_sizes[i]
+        relevant_H = H[start_ind:end_ind,:]
+        big_H[curr_row:curr_row+row_size] = relevant_H
+        curr_row += row_size
     return big_H
 
-def form_first_alpha(opening_bracks,reverse=False):
+def form_first_alpha(opening_bracks, batch_size):
     """
     Get a big column vector of the first
     measurements of alpha
     """
-    ind = np.argmin(np.array([x.bracket[1] for x in opening_bracks]))
-    smallest_brack = opening_bracks[ind]
-    dom,alpha =  smallest_brack.get_data(reverse)
-    col_size = dom.size
-    alphas = np.zeros((col_size*len(opening_bracks),1))
+    max_ind = batch_size
+    """ First determine size of column vec and 
+    contribution of each bracket """
+    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size)
+
+    alphas = np.zeros((num_rows,1))
+    curr_row = 0
     for i in range(len(opening_bracks)):
-        brack = opening_bracks[i]
-        dom, alphs= brack.get_data(reverse)
-        alphas[i*col_size:(i+1)*col_size,0] = alphs[:col_size]
+        x = opening_bracks[i]
+        row_size = row_sizes[i]
+        y = alphas[curr_row:curr_row+row_size, 0]
+        alphas[curr_row:curr_row+row_size,0] = x.data[:row_size]
+        curr_row += row_size
     return alphas
     
-def get_H_inv(H, opening_bracks, reverse=False):
+def get_H_inv(H, opening_bracks, batch_size):
     """
     Use covariance of brackets and initial thing of
     H to compute H pseudo inverse
@@ -251,25 +294,24 @@ def get_H_inv(H, opening_bracks, reverse=False):
     C is diagonal with highly structured blocksj
     """
     """first compute block size """
-    ind = np.argmin(np.array([x.bracket[1] for x in opening_bracks]))
-    smallest_brack = opening_bracks[ind]
-    dom,alpha =  smallest_brack.get_data(reverse)
-    col_size = dom.size
+    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size)
     """
-    Compute Cinv H and H.T @ Cinv
-    """
+    Compute Cinv H and H.T @ Cinv """
     CiH = np.zeros(H.shape)
     CiH[:,:] = H
+    curr_row = 0
     for i in range(len(opening_bracks)):
         brack = opening_bracks[i]
         var = brack.alpha_var
-        CiH[i*col_size:(i+1)*col_size,:] *= 1/var 
+        row_size = row_sizes[i]
+        CiH[curr_row:curr_row+row_size,:] *= 1/var 
+        curr_row += row_size
     inv = np.linalg.inv(H.T@CiH)
     pinv = inv @ CiH.T
-    cov =  inv
+    cov = inv
     return pinv, cov
         
-def get_brackets(mins, alpha_ests, freqs, use_pickle=True):
+def get_brackets(mins, n_ests, freqs, use_pickle=True):
     if use_pickle == True:
         with open('brackets/brackets.pickle', 'rb') as f:
             brackets = pickle.load(f)
@@ -287,149 +329,40 @@ def get_brackets(mins, alpha_ests, freqs, use_pickle=True):
             pickle.dump(b_objs, f) 
         return b_objs
 
-def get_initial_est(b_list, num_f, df,reverse):
+def get_initial_est(b_list, num_f, df, batch_size, start_ind=0):
     """
     get estimate of theta and Sigma to seed
     the sequential least squares algorithm
-    """
-    opening_bracks = [x for x in b_list if x.bracket[0] == 6.5]
-    H = form_first_H(opening_bracks, num_f, df)
-    alphas = form_first_alpha(opening_bracks)
-    Hinv, cov = get_H_inv(H, opening_bracks)
-    theta0 = Hinv@alphas
-    ind = np.argmin(np.array([x.bracket[1] for x in opening_bracks]))
-    smallest_brack = opening_bracks[ind]
-    print('smallest_brack',smallest_brack)
-    end=smallest_brack.bracket[1]
-    ignored_bracks = [x for x in b_list if (x.bracket[0] < end) and(x not in opening_bracks)]
-    dom,alpha =  smallest_brack.get_data(reverse)
-    col_size = dom.size
-    for i, b in enumerate(opening_bracks):
-        dom, alpha= b.get_data(reverse)
-        val = H[i*col_size:(i+1)*col_size,:]@theta0
-    start_ind = col_size
-    return theta0, cov, col_size, opening_bracks
+    use the first batch_size*dm minutes of data to accomplish this
 
-def form_seed_H(open_bracks, num_f, df,seed_size):
-    """
-    Formthe model for the first batch LS estimate
-    Input -
-        open_bracks - list of brackets sorted 
-        num_f - int
-            number of frequencies to include model
-        df - freq resolution (float)
-    Output -
-    big_H - numpy matrix
-        matrix consisting of big model for all the brackets
-        truncated to the smallest bracket
-    """
-    """find the size of the smallest bracket
-        and the corresponding domain
-        while we loop through, grab all the samples I will 
-        need for the inverse """
-    ind = np.argmin(np.array([x.dom.size for x in open_bracks]))
-    smallest_brack = open_bracks[ind]
-    print('smallest brack', smallest_brack)
-    dom = smallest_brack.dom[:seed_size]
-    t = dom
-    """ Form mini H"""
-    H = np.ones((dom.size, 2*num_f+1))
-    H[:,0] = t
-    """ Populate the columns with the sines and cosines """
-    if num_f > 0:
-        for i in range(1, num_f+1):
-            vals = t*np.cos(2*np.pi*i*df*t)
-            H[:,2*i-1] = vals
-            vals = t*np.sin(2*np.pi*i*df*t)
-            H[:,2*i] = vals
-    """ Make the big H """
-    big_H = np.ones((t.size*len(open_bracks), 2*num_f+1))
-    for i in range(len(open_bracks)):
-        big_H[i*t.size:(i+1)*t.size, :] = H
-    return big_H
-
-def form_seed_alpha(open_bracks,seed_size):
-    """
-    Get a big column vector of the first block
-    measurements of alpha from 
-    """
-    ind = np.argmin(np.array([x.dom.size for x in open_bracks]))
-    smallest_brack = open_bracks[ind]
-    print('smallest_bracket', smallest_brack)
-    dom = smallest_brack.dom[:seed_size]
-    col_size = dom.size
-    alphas = np.zeros((col_size*len(open_bracks),1))
-    for i in range(len(open_bracks)):
-        brack = open_bracks[i]
-        alpha= brack.data
-        alphas[i*col_size:(i+1)*col_size,0] = alpha[:col_size]
-    return alphas
-
-def get_seed_H_inv(H, opening_bracks, seed_size):
-    """
-    Use covariance of brackets and initial thing of
-    H to compute H pseudo inverse
-    Hpsuedo is inv(H.T@Cinv@H)@H.T@Cinv
-    C is diagonal with highly structured blocksj
-    """
-    """first compute block size """
-    ind = np.argmin(np.array([x.bracket[1] for x in opening_bracks]))
-    smallest_brack = opening_bracks[ind]
-    dom,alpha =  smallest_brack.dom, smallest_brack.data
-    col_size = seed_size
-    """
-    Compute Cinv H and H.T @ Cinv
-    """
-    CiH = np.zeros(H.shape)
-    CiH[:,:] = H
-    for i in range(len(opening_bracks)):
-        brack = opening_bracks[i]
-        var = brack.alpha_var
-        CiH[i*col_size:(i+1)*col_size,:] *= 1/var 
-    inv = np.linalg.inv(H.T@CiH)
-    pinv = inv @ CiH.T
-    cov =  inv
-    return pinv, cov
-
-def get_seed_est(open_bracks, num_f, df, seed_size,reverse=False):
-    """
-    Use the open brackets returned by seq_least_squares
-    to do a small batch estimate with num_f frequencies at df
-    spacing
-    Input - 
-    open_bracks - list of Brackets
-        should all have same start min
-    num_f - integer >= 0
-        number of frequency components to use
+    Input 
+    b_list - list of Brackets
+    num_f - int
+        num frequencies
     df - float
-        frquency spacing
-    Output -
-        theta0 - numpy array (column of par. estimats)
-        cov - numpy matrix (covariance of theta0)
-        ind_offset - number of samples used in the estimation
+        freq spacing
+        whether to reverse the phase samples...
+        in beta 
+
+    Output
+    theta - numpy array (column)
+        model parameter estimates
+    cov - numpy matrix
+        param cov matrix
+    
     """
 
-    """ Need to make sure the samples are long enough to avoid 
-    ill conditioning """
-    open_bracks = [x for x in open_bracks if x.dom.size > seed_size]
-    dom_offset = open_bracks[0].dom[0]
-    for x in open_bracks:
-        x.dom -= dom_offset
-        x.add_alpha0(x.data[0])
-        x.data -= x.data[0]
-    H = form_seed_H(open_bracks, num_f, df,seed_size)
-    alphas = form_seed_alpha(open_bracks,seed_size)
-    Hinv, cov = get_seed_H_inv(H, open_bracks,seed_size,)
+    """ Figure out which brackets contain data in this interval """
+    opening_bracks = [x for x in b_list if (0 <= (x.start - start_ind)) and ((x.start - start_ind) <= batch_size)]
+
+    """ Form a model matrix from these brackets """
+    H = form_first_H(opening_bracks, num_f, df, batch_size)
+    """ COmbine the msmts from these brackets into one ''supervector'' """
+    alphas = form_first_alpha(opening_bracks, batch_size)
+
+    Hinv, cov = get_H_inv(H, opening_bracks, batch_size)
     theta0 = Hinv@alphas
-    ind = np.argmin(np.array([x.dom.size for x in open_bracks]))
-    """ Go through open bracks and delete elements that were used in batch
-    inverseion """
-    for x in open_bracks:
-        x.data = x.data[seed_size:]
-        x.dom = x.dom[seed_size:]
-    open_bracks = [x for x in open_bracks if x.dom.size >0]
-    print('batch length (s) {:.2f}'.format(seed_size/1500))
-    return  theta0, cov, open_bracks, dom_offset
+    return theta0, cov, opening_bracks
     
 def sort_by_end(b_list):
     """
@@ -449,106 +382,152 @@ def sort_by_start(b_list):
     sorted_list = [b_list[x] for x in inds]
     return sorted_list
 
-def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_num=30000, open_bracks=[],reverse=False,dom_offset=0):
-    """ Run the initial batch LS. Use output to initialize the
-    counter (curr_min, curr_ind), as well as the initial theta estimate
-    and initial Sigma """
+def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=30000, open_bracks=[]):
+    """
+    Do sequential least squares
+    Input -
+        b_list - list of Brackets 
+            data to use
+        num_f - int
+            number of frequencies in the model
+        df - float
+            frequency spacing
+        theta - numpy array (column)
+            initial parameter estimates
+        Sigma - numpy matrix
+            seed initial error covariance
+        start_ind - int
+            reference to which part of the data to use
+    """
+   
+    """ Get total number of samples in the data record """ 
     _ = get_pest(49, 1)
     num_samples =  _.size
-    minute_dom = np.linspace(6.5,40, num_samples)
-    sec_dom = np.linspace(0, (40-6.5)*60, num_samples)
-    dm = minute_dom[1]-minute_dom[0]
-    start_min = minute_dom[start_ind]
-    print('Starting sequential least_squares at ', start_min)
-    start_sec = sec_dom[start_ind]-dom_offset
-    ds = sec_dom[1] - sec_dom[0]
 
-    """    Sort the brackets by end_min """
+    """ Form the domain in seconds, since I use seconds in my
+        model (frequencies in Hz) """
+    ds = 1/1500
+    sec_dom = np.linspace(0, (40-6.5)*60-ds, num_samples)
+
+    start_sec = sec_dom[start_ind]
+    print('Starting sequential least_squares at ', start_sec/60)
+
+    """    Sort the brackets by end_min  """
     sorted_b_last = sort_by_end(b_list)
-    sorted_b_first = sort_by_start(b_list)
 
     """ Get the open brackets """
-    curr_ind = start_ind+1
-    curr_min = 6.5+curr_ind*dm
-    curr_sec = start_sec + ds
+    curr_ind = start_ind
+    curr_sec = start_sec
+    
     """
-    Remove those that are already closed
-    """
-    while sorted_b_last[0].bracket[1] <= start_min:
+    Remove the brackets that end before the start min """
+    while sorted_b_last[0].end <= start_ind:
         sorted_b_last.pop(0)
-    while sorted_b_first[0].bracket[0] <= start_min:
-        if sorted_b_first[0] in sorted_b_last:
-            x = sorted_b_first.pop(0)
-            """
-            Reset opening to start_min for all  brackets
-            """
-            x.bracket[0] = start_min
-            """ init data objects """
-            _,_ = x.get_data(reverse)
-            open_bracks.append(x)
-        else:
-            sorted_b_first.pop(0)
+
+
+    """ Generate a sorted list by first min """
+    sorted_b_first = sort_by_start(sorted_b_last)
+
+    """ Truncate brackets at the start ind. Those
+        that contain the start ind are popped off the
+        sorted_b_first list and added to open_brackets """
+
+
+    while sorted_b_first[0].start< start_ind:
+        x = sorted_b_first.pop(0)
+        """
+        Truncate at start_ind for all  brackets """ 
+        x.bracket[0] = start_ind
+        """ init data objects """
+        _,_ = x.get_data()
+        open_bracks.append(x)
+
     """
     Sort open brackets by their closing time
     """
     open_bracks = sort_by_end(open_bracks)
 
+    """ Make sure they are all clipped to start_ind """
+    for x in open_bracks:
+        """ Clip them to start_ind """
+        trunc_length = start_ind - x.start
+        x.dom = x.dom[trunc_length:]
+        x.data = x.data[trunc_length:]
+
+
     """
     Loop through whole system and update theta
     """
-    num_samples = curr_ind + batch_num
-    curr_alpha = 0
-    offsets = []
+    final_ind = curr_ind + batch_size
     alpha_list = []
-    while curr_ind < num_samples:
+    """ Model sec as a different variable allows me to
+    test out doing chunks at a later time...for now 
+    I don't distinguish """
+    model_sec = sec_dom[curr_ind]
+    while curr_ind <= final_ind:
+        tmp = time.time()        
+
         """ Remove brackets that closed """
-        if open_bracks[0].bracket[1] < curr_min:
-            print('removing bracket(s), curr_min is ', curr_min)
-            while open_bracks[0].bracket[1] < curr_min:
-                x = open_bracks.pop(0)
-                print(len(x.data))
-                print('removed bracket', x)
+        while open_bracks[0].end <= curr_ind:
+            print('removing bracket, curr_ind ', curr_ind)
+            x = open_bracks.pop(0)
+            """ Double check that there is no 
+            data left in that bracket """
+            print(len(x.data))
+            print('removed bracket', x)
+
         """ add brackets that have opened """
-        if curr_min >= sorted_b_first[0].bracket[0]:
-            print('adding new brackets at curr min ', curr_min)
-            while curr_min >= sorted_b_first[0].bracket[0]:
-                x= sorted_b_first.pop(0)
-                print('adding bracket ', x)
-                x.add_alpha0(curr_alpha)
-                print('bracket min', x.bracket[0])
-                """ initialize data """
-                _,_ = x.get_data(reverse) 
-                open_bracks.append(x)
+        while curr_ind >= sorted_b_first[0].start:
+            """ Pop first element off sorted_b_first """
+            x= sorted_b_first.pop(0)
+            print('adding bracket ', x)
+            
+            """ Offset the data to agree with the rest of
+            this estimation """
+            """ I'm commenting this out for the purpose of
+            comparing batch and sequential as a test"""
+            x.add_alpha0(curr_alpha)
+            print('bracket ind, curr_ind', x.start, curr_ind)
+
+            """ initialize data attributes """
+            _,_ = x.get_data() 
+            open_bracks.append(x)
+            """ Make sure open bracks are sorted
+                by closing time """
             open_bracks = sort_by_end(open_bracks)
-        """ Create model row h.T """
-        h = get_h(curr_sec, num_f, df)
+
+        """ Create model row h.T for the current time """
+        h = get_h(model_sec, num_f, df)
         for brack in open_bracks:
             alpha = brack.data[0]
             """ pop off top element of data """
             brack.data = np.delete(brack.data, 0)
             brack.dom = np.delete(brack.dom, 0)
-            """ Copmute gain matrix """
+            """ Compute gain matrix """
             K = get_Kn(Sigma, h, brack.alpha_var)
+            """ Compute model parameter estimates and 
+            estimate covariance """
             theta = update_theta(theta, K, alpha, h)
             Sigma = update_Sigma(Sigma, K, h)
         curr_alpha = (h.T@theta)[0]
         alpha_list.append(curr_alpha)
         curr_ind += 1
-        curr_min += dm
         curr_sec += ds
+        model_sec += ds
+        if curr_ind % 100 == 0:
+            print('loop time ', time.time() -tmp)
+
     """
     Sorted_b_last has popped off all the leftovers, so it contains
     brackets that are either currently open or haven't been opened yet
+    I remove the elements of sorted_b_last that are in open_bracks
     """
-    sub1 = time.time()
     leftover_b_list = [x for x in sorted_b_last if x not in open_bracks]
-    """
-    Update open_bracks to reflect the fact that I've popped off a bunch of elements """
-    last_min = curr_min - dm
-    print('currrrrrrrrrr')
+    """ Open bracks have had their domains and values modified, 
+    so update their start index to reflect that """
     for x in open_bracks:
-        x.bracket[0] = last_min
-    return theta, Sigma, alpha_list, curr_sec, curr_ind, open_bracks, leftover_b_list
+        x.start = curr_ind
+    return theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list
             
 def form_alpha_est(times, num_f, df, theta):
     """
@@ -578,38 +557,78 @@ def form_alpha_est(times, num_f, df, theta):
             vals = t*np.sin(2*np.pi*i*df*t)
             H[:,2*i] = vals
     return H@theta
+
+def compare_sls_to_batch(): 
+    """ Form minute domain, secon domain """
+    pest = get_pest(49, 1)
+    dm = 1/1500/60
+    min_dom = np.linspace(6.5, 40-dm, pest.size)
+    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
+
+    """ Fetch the bracket list """
+    n_ests = form_alpha_noise_est(mins,freqs,use_pickle=True)
+    b_list = get_brackets(mins, n_ests, freqs, use_pickle=False)
+
+    """ Perform a batch inversion on the first ten seconds of data """
+    dm = min_dom[1]-min_dom[0]
+    num_f = 5
+    df = 1
+    T = 5
+    batch_size = int(T*1500)
+    print('batch_size',batch_size)
+
+    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, batch_size)
+    print(theta0)
+    t = np.linspace(0, T, batch_size)
+    dt = 1/1500
+    plt.figure()
+    for x in bracks:
+        plt.plot(dt*x.dom[:batch_size], x.data[:batch_size])
+    batch_bracks = bracks[:] 
+    batch_batch_size = batch_size
     
 
-def plot_pickles():
-    shallow_inds = [4,6,14,15,16,17,18,19,20]
-    filenames = os.listdir('pickles') 
-    names = ['pickles/' + x for x in filenames if x[8:11] == 'rev']
-    print(names)
-    theta0s = []
-    theta1s = []
-    sigma0s = []
-    times = []
-    for name in names:
-        with open(name, 'rb') as f:
-            theta, Sigma, alpha_list, curr_sec, curr_ind, open_bracks, new_b_list = pickle.load(f)
-            if abs(theta[0])>100:
-                print(name)
-            else:
-                theta0s.append(theta[0])
-                sigma0s.append(Sigma[0,0])
-                theta1s.append(theta[1])
-                times.append(curr_ind)
-    plt.figure()
-    plt.errorbar(times, theta0s, sigma0s, fmt='o')
+    """ Perform a sequential inversion on the first ten seconds, using
+    the first 5 seconds to seed to 10 second inversion """
+    T = 2.5
+    batch_size=int(T*1500)
+    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, batch_size)
+    """ Filter out bracks that are opened"""
+    new_b_list = [x for x in b_list if x not in bracks]
+    """ reset start indices to batch_size """
+    start_ind = batch_size
+    """ Filter out bracks that are closed """
+    bracks = [x for x in bracks if x.end > start_ind]
+    
+    tmp = time.time() 
+    theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(new_b_list, num_f, df, theta0, Sigma, start_ind, batch_size, bracks)
+    x = time.time() - tmp
+    print('time for seq', x)
+    print('predicted total time is ', (33.5*60 / 2.5 * x / 60), ' hours')
+    print('sls theta')
+    print(theta)
+
+
+    bracks_used = [x for x in b_list if x.start < batch_size]
+    double_check = [x for x in b_list if (x in bracks) or (x in open_bracks)]
+    double_check = list(set(double_check))
+    double_check = sort_by_start(double_check)
+    batch_bracks = sort_by_start(batch_bracks)
 
     plt.figure()
-    plt.scatter(times, theta1s)
+    for x in double_check:
+        plt.plot(dt*x.dom[:batch_batch_size], x.data[:batch_batch_size])
     plt.show()
 
- 
+
+    
+
 
 if __name__ == '__main__':
     start = time.time()
-    shallow_inds = [4,6,14,15,16,17,18,19,20]
-    pest = get_pest(49, 1)
-    min_dom = np.linspace(0, 40, pest.size)
+    _ = get_pest(49,1)
+    dm = 1/1500/60
+    compare_sls_to_batch()
+
+    end = time.time()
+    print('total time', end-start)
