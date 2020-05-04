@@ -126,7 +126,7 @@ def update_Sigma(Sigma_curr,K,h):
     Sigma_new = (np.identity(n) - K@h.T)@Sigma_curr
     return Sigma_new
     
-def get_h(curr_sec, num_f, df):
+def get_h(curr_sec, num_f, df, poly_order):
     """
     Form the new model row h.T at time t=curr_sec with num-f freq comp
     Input -
@@ -136,15 +136,18 @@ def get_h(curr_sec, num_f, df):
     Output -
     h - numpy array (column)
     """
-    h = np.ones((2*num_f+1,1))
-    h[0,0] = curr_sec
+    h = np.ones(((2*num_f+1)*poly_order,1))
+    for i in range(poly_order):
+        h[i,0] = np.power(curr_sec,i+1)
     """ Populate the columns with the sines and cosines """
     if num_f > 0:
-        for i in range(1, num_f+1):
-            vals = curr_sec*np.cos(2*np.pi*i*df*curr_sec)
-            h[2*i-1,0] = vals
-            vals = curr_sec*np.sin(2*np.pi*i*df*curr_sec)
-            h[2*i,0] = vals
+        for j in range(poly_order):
+            multiplier = h[i,0]
+            for i in range(1, num_f+1):
+                vals = multiplier*np.cos(2*np.pi*i*df*curr_sec)
+                h[poly_order + j*2*num_f + 2*i-2,0] = vals
+                vals = multiplier*np.sin(2*np.pi*i*df*curr_sec)
+                h[poly_order + j*2*num_f + 2*i-1,0] = vals
     return h
 
 class Bracket:
@@ -218,8 +221,7 @@ def get_row_sizes(opening_bracks, batch_size):
         row_sizes.append(num_samps)
     return num_rows, row_sizes
   
-
-def form_first_H(opening_bracks, num_f, df, batch_size):
+def form_first_H(opening_bracks, num_f, df, poly_order, batch_size):
     """
     Form the model for the first batch LS estimate
     Input -
@@ -242,18 +244,21 @@ def form_first_H(opening_bracks, num_f, df, batch_size):
     dt = 1/1500
     t = np.linspace(0, dt*batch_size, batch_size)
     """ H that contains all possible rows needed """
-    H = np.ones((batch_size, 2*num_f+1))
-    H[:,0] = t
+    H = np.ones((batch_size, (2*num_f+1)*poly_order))
+    for i in range(poly_order):
+        H[:,i] = np.power(t, i+1)
     """ Populate the columns with the sines and cosines """
     if num_f > 0:
-        for i in range(1, num_f+1):
-            vals = t*np.cos(2*np.pi*i*df*t)
-            H[:,2*i-1] = vals
-            vals = t*np.sin(2*np.pi*i*df*t)
-            H[:,2*i] = vals
+        for j in range(poly_order):
+            multiplier = H[:,j]
+            for i in range(1, num_f+1):
+                vals = multiplier*np.cos(2*np.pi*i*df*t)
+                H[:,poly_order + 2*j*num_f +2*i-2] = vals
+                vals = multiplier*np.sin(2*np.pi*i*df*t)
+                H[:,poly_order + 2*j*num_f + 2*i-1] = vals
     """ Make the big H by selecting the appropriate 
     row from H"""
-    big_H = np.ones((num_rows, 2*num_f+1))
+    big_H = np.ones((num_rows, (2*num_f+1)*poly_order))
     curr_row = 0 # keep track of where to add new values
     for i in range(len(opening_bracks)):
         curr_brack = opening_bracks[i]
@@ -329,7 +334,7 @@ def get_brackets(mins, n_ests, freqs, use_pickle=True):
             pickle.dump(b_objs, f) 
         return b_objs
 
-def get_initial_est(b_list, num_f, df, batch_size, start_ind=0):
+def get_initial_est(b_list, num_f, df, poly_order, batch_size, start_ind=0):
     """
     get estimate of theta and Sigma to seed
     the sequential least squares algorithm
@@ -356,7 +361,7 @@ def get_initial_est(b_list, num_f, df, batch_size, start_ind=0):
     opening_bracks = [x for x in b_list if (0 <= (x.start - start_ind)) and ((x.start - start_ind) <= batch_size)]
 
     """ Form a model matrix from these brackets """
-    H = form_first_H(opening_bracks, num_f, df, batch_size)
+    H = form_first_H(opening_bracks, num_f, df, poly_order, batch_size,start_ind)
     """ COmbine the msmts from these brackets into one ''supervector'' """
     alphas = form_first_alpha(opening_bracks, batch_size)
 
@@ -382,7 +387,7 @@ def sort_by_start(b_list):
     sorted_list = [b_list[x] for x in inds]
     return sorted_list
 
-def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=30000, open_bracks=[]):
+def seq_least_squares(b_list, num_f, df, poly_order, theta, Sigma, start_ind, batch_size=30000, open_bracks=[],model_sec_start=0):
     """
     Do sequential least squares
     Input -
@@ -392,6 +397,8 @@ def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=300
             number of frequencies in the model
         df - float
             frequency spacing
+        poly_order - int
+            order of polynomial to fit
         theta - numpy array (column)
             initial parameter estimates
         Sigma - numpy matrix
@@ -463,31 +470,29 @@ def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=300
     """ Model sec as a different variable allows me to
     test out doing chunks at a later time...for now 
     I don't distinguish """
-    model_sec = sec_dom[curr_ind]
+#    model_sec = sec_dom[curr_ind] commented out since i'm trying the chunk
+    model_sec = model_sec_start
     while curr_ind <= final_ind:
         tmp = time.time()        
 
         """ Remove brackets that closed """
         while open_bracks[0].end <= curr_ind:
-            print('removing bracket, curr_ind ', curr_ind)
             x = open_bracks.pop(0)
             """ Double check that there is no 
             data left in that bracket """
-            print(len(x.data))
-            print('removed bracket', x)
+            #print(len(x.data))
+            #print('removed bracket', x)
 
         """ add brackets that have opened """
         while curr_ind >= sorted_b_first[0].start:
             """ Pop first element off sorted_b_first """
             x= sorted_b_first.pop(0)
-            print('adding bracket ', x)
             
             """ Offset the data to agree with the rest of
             this estimation """
             """ I'm commenting this out for the purpose of
             comparing batch and sequential as a test"""
             x.add_alpha0(curr_alpha)
-            print('bracket ind, curr_ind', x.start, curr_ind)
 
             """ initialize data attributes """
             _,_ = x.get_data() 
@@ -497,7 +502,7 @@ def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=300
             open_bracks = sort_by_end(open_bracks)
 
         """ Create model row h.T for the current time """
-        h = get_h(model_sec, num_f, df)
+        h = get_h(model_sec, num_f, df, poly_order)
         for brack in open_bracks:
             alpha = brack.data[0]
             """ pop off top element of data """
@@ -509,13 +514,11 @@ def seq_least_squares(b_list, num_f, df, theta, Sigma, start_ind, batch_size=300
             estimate covariance """
             theta = update_theta(theta, K, alpha, h)
             Sigma = update_Sigma(Sigma, K, h)
-        curr_alpha = (h.T@theta)[0]
-        alpha_list.append(curr_alpha)
+        curr_alpha = (h.T@theta)[0,0]
+        #alpha_list.append(curr_alpha)
         curr_ind += 1
         curr_sec += ds
         model_sec += ds
-        if curr_ind % 100 == 0:
-            print('loop time ', time.time() -tmp)
 
     """
     Sorted_b_last has popped off all the leftovers, so it contains
@@ -572,12 +575,13 @@ def compare_sls_to_batch():
     """ Perform a batch inversion on the first ten seconds of data """
     dm = min_dom[1]-min_dom[0]
     num_f = 5
-    df = 1
-    T = 5
+    df = .1
+    T = 100
+    poly_order = 5
     batch_size = int(T*1500)
     print('batch_size',batch_size)
 
-    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, batch_size)
+    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, poly_order, batch_size)
     print(theta0)
     t = np.linspace(0, T, batch_size)
     dt = 1/1500
@@ -592,7 +596,7 @@ def compare_sls_to_batch():
     the first 5 seconds to seed to 10 second inversion """
     T = 2.5
     batch_size=int(T*1500)
-    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, batch_size)
+    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, batch_size, poly_order)
     """ Filter out bracks that are opened"""
     new_b_list = [x for x in b_list if x not in bracks]
     """ reset start indices to batch_size """
@@ -601,7 +605,7 @@ def compare_sls_to_batch():
     bracks = [x for x in bracks if x.end > start_ind]
     
     tmp = time.time() 
-    theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(new_b_list, num_f, df, theta0, Sigma, start_ind, batch_size, bracks)
+    theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(new_b_list, num_f, df, poly_order, theta0, Sigma, start_ind, batch_size, bracks)
     x = time.time() - tmp
     print('time for seq', x)
     print('predicted total time is ', (33.5*60 / 2.5 * x / 60), ' hours')
@@ -621,14 +625,138 @@ def compare_sls_to_batch():
     plt.show()
 
 
+def run_long_sls():
+
+    """ Perform a sequential inversion on the 5 minutes, using
+    the first 5 seconds to seed the sequential thing """
+    pest = get_pest(49, 1)
+    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
+
+    """ Fetch the bracket list """
+    n_ests = form_alpha_noise_est(mins,freqs,use_pickle=True)
+    b_list = get_brackets(mins, n_ests, freqs, use_pickle=False)
+
+    """ PIckl num model params"""
+    num_f = 5
+    df = .1
+    poly_order = 4
     
+
+    """ Run initial batch estimate """
+    T = 40
+    batch_size=int(T*1500)
+    theta0, Sigma, bracks =get_initial_est(b_list, num_f, df, poly_order, batch_size)
+    print('initial ests', theta0)
+
+    """ Filter out bracks that are opened"""
+    new_b_list = [x for x in b_list if x not in bracks]
+    """ reset start indices to batch_size """
+    start_ind = batch_size
+
+    """ Select the length of the sequential inversion """
+    t_min = 32
+    num_samples = t_min*60*1500
+    """ Filter out bracks that are closed """
+    bracks = [x for x in bracks if x.end > start_ind]
+    tmp = time.time() 
+    theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(new_b_list, num_f, df, poly_order, theta0, Sigma, start_ind, num_samples, bracks)
+    x = time.time() - tmp
+    print('time for seq', x)
+    print('sls theta')
+    print(theta)
+
+    with open('pickles/sls_poly_result.pickle', 'wb') as f:
+        pickle.dump([theta, np.diag(Sigma), curr_ind, open_bracks, leftover_b_list],f)
+
+def compute_chunk_estimate(chunk_len):
+    """
+    Perform an estimate alpha dot for a series of chunks of length chunk_len(seconds)
+    Break data up into chunks
+    Within each chunk, move the bracket's starting phase measurements to 0
+    to remove the offset errs. 
+    Then perform a small batch inversion to get things started, finish the
+    chunk with sls
+    chunk_len - float
+        lenght of each chunk in seconds
+    """
+    pest = get_pest(49, 1)
+    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
+
+    """ Fetch the bracket list """
+    n_ests = form_alpha_noise_est(mins,freqs,use_pickle=True)
+    b_list = get_brackets(mins, n_ests, freqs, use_pickle=False)
+    
+    """ get lenght of pest records """
+    total_len = pest.size
+
+    """ Get number of chunks. It throws out some data at the end """
+    chunk_size = 1500*chunk_len
+    num_chunks = int(total_len // chunk_size)
+    theta_chunks = []
+    sigma_chunks = []
+
+    """ open the first brackets """
+    b_list = sort_by_start(b_list)
+    open_bracks = []
+    i = 0
+    while b_list[i].start == 0:
+        x = b_list.pop(0)
+        x.add_alpha0(0)
+        _,_ = x.get_data()
+        open_bracks.append(x)
+
+    for chunk in range(num_chunks):
+        start_ind = chunk_size*chunk
+        """
+        Set all the open bracks to start their data at phi0 = 0
+        """
+        for x in open_bracks:
+            x.add_alpha0(0)
+            """ I can't use the routine """
+            x0= x.data[0]
+            x.data -= x0
+
+        """ Use a bullshit mesmt with huge covariance to start sls"""
+        theta, Sigma = np.array([1]).reshape(1,1), np.matrix([1e6])
+
+        """ Run sls for the chunk """
+        theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(b_list, 0, 1, 1, theta, Sigma, start_ind, batch_size=chunk_size-1, open_bracks=open_bracks, model_sec_start=0)
+
+        """ Update b_list """
+        b_list = leftover_b_list
+
+        """ add estimates ot record """
+        theta_chunks.append(theta[0,0])
+        sigma_chunks.append(Sigma[0,0])
+        print('-----------finished sls for chunk', chunk)
+        print(theta)
+        print(curr_ind, chunk_size*(chunk+1))
+
+    return theta_chunks, sigma_chunks
+        
+        
+
+
+def look_at_long_run():    
+    with open('pickles/sls_result.pickle', 'rb') as f:
+        theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = pickle.load(f)
+
+    print(theta)
 
 
 if __name__ == '__main__':
     start = time.time()
     _ = get_pest(49,1)
     dm = 1/1500/60
-    compare_sls_to_batch()
+    chunk_len = 5
+    theta, sigma = compute_chunk_estimate(chunk_len)
+    plt.plot(theta)
+    plt.show()
+    with open('pickles/chunk_theta_' + str(chunk_len) + '.pickle', 'wb') as f:
+        pickle.dump([theta, sigma], f)
+    #compare_sls_to_batch()
+    #run_long_sls()
+    #look_at_long_run()
 
     end = time.time()
     print('total time', end-start)
