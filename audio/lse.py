@@ -204,8 +204,8 @@ class Bracket:
     def __repr__(self):
         return "Bracket for sensor {:d} at frequency {:d} starting at minute {:.2f} and ending at minute {:.2f}".format(self.sensor + 1, self.freq, self.start_min, self.end_min)
 
-def get_row_sizes(opening_bracks, batch_size):
-    max_ind = batch_size
+def get_row_sizes(opening_bracks, batch_size,start_ind=0):
+    max_ind = batch_size+start_ind
     num_rows = 0 # to count total num
     row_sizes = [] # to hold the size for each bracket
     for x in opening_bracks:
@@ -213,15 +213,21 @@ def get_row_sizes(opening_bracks, batch_size):
         """ If the bracket is fully contained
         in the batch chunk, the whole data segment
         will be used """
-        if x.end < batch_size:
-            num_samps = x.end-x.start
+        if x.start > start_ind:
+            if x.end > max_ind:
+                num_samps = max_ind - x.start
+            else:
+                num_samps = x.end-x.start
         else:
-            num_samps = max_ind - x.start 
+            if x.end > max_ind:
+                num_samps = max_ind-start_ind
+            else:
+                num_samps = x.end-start_ind
         num_rows+=num_samps
         row_sizes.append(num_samps)
     return num_rows, row_sizes
   
-def form_first_H(opening_bracks, num_f, df, poly_order, batch_size):
+def form_first_H(opening_bracks, num_f, df, poly_order, batch_size,start_ind=0):
     """
     Form the model for the first batch LS estimate
     Input -
@@ -236,8 +242,8 @@ def form_first_H(opening_bracks, num_f, df, poly_order, batch_size):
     """
 
     """ First figure out how big H will be"""
-    max_ind = batch_size
-    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size)
+    max_ind = start_ind+batch_size
+    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size,start_ind)
   
     """ Iterate through the brackets
     and populate an H model matrix """ 
@@ -262,16 +268,21 @@ def form_first_H(opening_bracks, num_f, df, poly_order, batch_size):
     curr_row = 0 # keep track of where to add new values
     for i in range(len(opening_bracks)):
         curr_brack = opening_bracks[i]
-        start_ind, end_ind = curr_brack.start, curr_brack.end
-        if end_ind > max_ind:
-            end_ind = max_ind
+        if curr_brack.start < start_ind:
+            data_start_ind = 0
+        else:
+            data_start_ind = curr_brack.start-start_ind
+        if curr_brack.end > max_ind:
+            data_end_ind = batch_size
+        else:
+            data_end_ind = curr_brack.end-start_ind
         row_size = row_sizes[i]
-        relevant_H = H[start_ind:end_ind,:]
+        relevant_H = H[data_start_ind:data_end_ind,:]
         big_H[curr_row:curr_row+row_size] = relevant_H
         curr_row += row_size
     return big_H
 
-def form_first_alpha(opening_bracks, batch_size):
+def form_first_alpha(opening_bracks, batch_size, start_ind=0):
     """
     Get a big column vector of the first
     measurements of alpha
@@ -279,15 +290,19 @@ def form_first_alpha(opening_bracks, batch_size):
     max_ind = batch_size
     """ First determine size of column vec and 
     contribution of each bracket """
-    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size)
+    num_rows, row_sizes = get_row_sizes(opening_bracks, batch_size,start_ind)
 
     alphas = np.zeros((num_rows,1))
     curr_row = 0
     for i in range(len(opening_bracks)):
         x = opening_bracks[i]
         row_size = row_sizes[i]
+        if x.start > start_ind:
+            data_start_ind = 0
+        else:
+            data_start_ind = start_ind - x.start
         y = alphas[curr_row:curr_row+row_size, 0]
-        alphas[curr_row:curr_row+row_size,0] = x.data[:row_size]
+        alphas[curr_row:curr_row+row_size,0] = x.data[data_start_ind:data_start_ind+row_size]
         curr_row += row_size
     return alphas
     
@@ -358,12 +373,14 @@ def get_initial_est(b_list, num_f, df, poly_order, batch_size, start_ind=0):
     """
 
     """ Figure out which brackets contain data in this interval """
-    opening_bracks = [x for x in b_list if (0 <= (x.start - start_ind)) and ((x.start - start_ind) <= batch_size)]
+    end_ind = start_ind + batch_size
+    opening_bracks = [x for x in b_list if (((x.start < start_ind) and (x.end > start_ind)) or ((x.start >= start_ind) and (x.start < end_ind)))]
 
     """ Form a model matrix from these brackets """
     H = form_first_H(opening_bracks, num_f, df, poly_order, batch_size,start_ind)
+
     """ COmbine the msmts from these brackets into one ''supervector'' """
-    alphas = form_first_alpha(opening_bracks, batch_size)
+    alphas = form_first_alpha(opening_bracks, batch_size,start_ind)
 
     Hinv, cov = get_H_inv(H, opening_bracks, batch_size)
     theta0 = Hinv@alphas
@@ -472,9 +489,9 @@ def seq_least_squares(b_list, num_f, df, poly_order, theta, Sigma, start_ind, ba
     I don't distinguish """
 #    model_sec = sec_dom[curr_ind] commented out since i'm trying the chunk
     model_sec = model_sec_start
+    curr_alpha = 0
     while curr_ind <= final_ind:
         tmp = time.time()        
-
         """ Remove brackets that closed """
         while open_bracks[0].end <= curr_ind:
             x = open_bracks.pop(0)
@@ -624,9 +641,7 @@ def compare_sls_to_batch():
         plt.plot(dt*x.dom[:batch_batch_size], x.data[:batch_batch_size])
     plt.show()
 
-
 def run_long_sls():
-
     """ Perform a sequential inversion on the 5 minutes, using
     the first 5 seconds to seed the sequential thing """
     pest = get_pest(49, 1)
@@ -668,14 +683,64 @@ def run_long_sls():
     with open('pickles/sls_poly_result.pickle', 'wb') as f:
         pickle.dump([theta, np.diag(Sigma), curr_ind, open_bracks, leftover_b_list],f)
 
+def lin_offset_alpha(brack, start_ind, chunk_size):
+    """
+    Take a bracket that contains data in the 
+    interval start_ind to start_ind + chunk_size
+    Calculate the linear fit back to the origin of it then offset 
+    it so that it passes the the origin at start_ind
+    """
+
+    """ If the bracket straddles the start index
+    you can just set alpha0 so that it intersects
+    0 at start_ind """
+    _,y = brack.get_data()
+    if brack.start <= start_ind:
+        data_ind_start = start_ind - brack.start
+        ds = brack.data[data_ind_start]
+        d0 = brack.data[0]
+        alpha0 = d0 - ds
+        brack.add_alpha0(alpha0)
+        _, y = brack.get_data()
+        return 
+
+    """ Otherwise, estimate the slope of the data within the 
+    chunk. Then pick alpha0 so that if I were to strethc
+    the data backward, it would hit 0 """
+    if brack.end >= start_ind + chunk_size:
+        data_end = start_ind + chunk_size - brack.start
+    else:
+        data_end = brack.end-brack.start # the full length
+    size = data_end
+    h = np.linspace(0, size-1, size)
+    h = h.reshape(h.size,1)
+    dats = brack.data[:data_end]
+    """ Get slopeof line """
+    d0 = dats[0]
+    dats -= d0
+    if size == 0:
+        print(brack)
+        return
+    if (h.T@h)[0,0] == 0:
+        print(brack)
+        return
+    alpha = h.T@dats / ((h.T@h)[0,0])
+    """ Now pick the offset to make it run through zero at 
+    the beginning of the chunk """
+    projected_initial_value = alpha*(brack.start-start_ind)
+    alpha0 = projected_initial_value
+    brack.add_alpha0(alpha0)
+    _,y = brack.get_data()
+    return
+
 def compute_chunk_estimate(chunk_len):
     """
     Perform an estimate alpha dot for a series of chunks of length chunk_len(seconds)
     Break data up into chunks
     Within each chunk, move the bracket's starting phase measurements to 0
     to remove the offset errs. 
-    Then perform a small batch inversion to get things started, finish the
-    chunk with sls
+    Then identify all brackets that will appear in the chunk, offset them all appropriately,
+    and then do a batch inverse
     chunk_len - float
         lenght of each chunk in seconds
     """
@@ -685,58 +750,55 @@ def compute_chunk_estimate(chunk_len):
     """ Fetch the bracket list """
     n_ests = form_alpha_noise_est(mins,freqs,use_pickle=True)
     b_list = get_brackets(mins, n_ests, freqs, use_pickle=False)
+
+
+
+    """ FIlter only the surface source ones """
+    b_list = [x for x in b_list if x.freq in [109, 127, 145, 163, 198, 232, 280, 335, 385]]
+    poly_order = 1
+    num_f = 0
+    df = 1
     
-    """ get lenght of pest records """
+    """ get length of pest records """
     total_len = pest.size
 
     """ Get number of chunks. It throws out some data at the end """
-    chunk_size = 1500*chunk_len
+    chunk_size = int(1500*chunk_len)
     num_chunks = int(total_len // chunk_size)
     theta_chunks = []
     sigma_chunks = []
 
-    """ open the first brackets """
-    b_list = sort_by_start(b_list)
-    open_bracks = []
-    i = 0
-    while b_list[i].start == 0:
-        x = b_list.pop(0)
-        x.add_alpha0(0)
-        _,_ = x.get_data()
-        open_bracks.append(x)
 
     for chunk in range(num_chunks):
         start_ind = chunk_size*chunk
-        """
-        Set all the open bracks to start their data at phi0 = 0
-        """
-        for x in open_bracks:
-            x.add_alpha0(0)
-            """ I can't use the routine """
-            x0= x.data[0]
-            x.data -= x0
+        print('start ind', start_ind, start_ind/1500/60 + 6.5)
+        end_ind = start_ind + chunk_size
 
-        """ Use a bullshit mesmt with huge covariance to start sls"""
-        theta, Sigma = np.array([1]).reshape(1,1), np.matrix([1e6])
 
-        """ Run sls for the chunk """
-        theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = seq_least_squares(b_list, 0, 1, 1, theta, Sigma, start_ind, batch_size=chunk_size-1, open_bracks=open_bracks, model_sec_start=0)
+        """ These brackets will be used """
+        opening_bracks = [x for x in b_list if (((x.start < start_ind) and (x.end > start_ind)) or ((x.start >= start_ind) and (x.start < end_ind)))]
 
-        """ Update b_list """
-        b_list = leftover_b_list
 
-        """ add estimates ot record """
-        theta_chunks.append(theta[0,0])
-        sigma_chunks.append(Sigma[0,0])
-        print('-----------finished sls for chunk', chunk)
-        print(theta)
-        print(curr_ind, chunk_size*(chunk+1))
+        for x in opening_bracks:
+            lin_offset_alpha(x, start_ind, chunk_size)
+        
+        theta0, cov, opening_bracks = get_initial_est(b_list, num_f, df, poly_order, chunk_size, start_ind=start_ind)
+        theta_chunks.append(theta0)
+        sigma_chunks.append(chunk_size)
+        print('thet0', theta0)
+        with open('pickles/chunks_shallow_batch.pickle', 'wb') as f:
+            pickle.dump([theta_chunks, sigma_chunks], f)
+
+        """ close out brackets that won't appear again to conserve mem"""
+        b_list = sort_by_end(b_list)
+        while b_list[0].end <= start_ind:
+            x = b_list.pop(0)
+            x.dom = 0
+            x.data = 0    
+
 
     return theta_chunks, sigma_chunks
         
-        
-
-
 def look_at_long_run():    
     with open('pickles/sls_result.pickle', 'rb') as f:
         theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = pickle.load(f)
@@ -744,16 +806,39 @@ def look_at_long_run():
     print(theta)
 
 
+def look_at_chunk_both():
+    with open('goddamn.txt', 'r') as f:
+        lines = f.readlines()
+        thetas = []
+        for i in range(len(lines)):
+            if i % 4 == 2:
+                val = lines[i][2:-3]
+                print(val)
+                thetas.append(float(val))
+        plt.plot(thetas)
+        plt.show()
+        #with open('pickles/chunk_theta_' + str(5) + '.pickle','rb') as f:
+        #    theta, sigma = pickle.load(f)
+    #plt.errorbar(theta, sigma)
+    #plt.show()
+
+def look_at_chunk_shallow():
+    with open('pickles/chunks_shallow_batch.pickle', 'rb') as f:
+        thetas, sigmas = pickle.load(f)
+        thetas = [x[0] for x in thetas]
+        plt.plot(thetas)
+        plt.show()
+
+    
+
 if __name__ == '__main__':
     start = time.time()
     _ = get_pest(49,1)
     dm = 1/1500/60
-    chunk_len = 5
-    theta, sigma = compute_chunk_estimate(chunk_len)
-    plt.plot(theta)
-    plt.show()
-    with open('pickles/chunk_theta_' + str(chunk_len) + '.pickle', 'wb') as f:
-        pickle.dump([theta, sigma], f)
+    chunk_len = 6
+    #look_at_chunk_both()
+#    theta, sigma = compute_chunk_estimate(chunk_len)
+    look_at_chunk_shallow()
     #compare_sls_to_batch()
     #run_long_sls()
     #look_at_long_run()
