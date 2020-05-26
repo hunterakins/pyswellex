@@ -7,6 +7,7 @@ import matplotlib._color_data as mcd
 #from lse import get_brackets
 from matplotlib.widgets import PolygonSelector
 from matplotlib.path import Path
+from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest
 
 '''
 Description:
@@ -238,26 +239,6 @@ def lump_lin_reg(p_est, T, dt, overlap=.5):
         errs[inds,:] =err
     return omega_ests, errs
         
-def get_pest(f0, s_ind):
-    """
-    Fetch the pickled phase estimate corresponding to 
-    frequency f0 and sensor s_ind
-    """
-    fname = 'pickles/kay_s' + str(s_ind) + 'pest_' + str(int(f0)) + '.pickle'
-    with open(fname, 'rb') as f:
-        p_est = pickle.load(f)
-    return p_est
-
-def get_alt_pest(f0, s_ind):
-    """
-    Fetch the pickled phase estimate corresponding to 
-    frequency f0 and sensor s_ind
-    """
-    fname = 'pickles/kay_s' + str(s_ind) + 'alt_pest_' + str(int(f0)) + '.pickle'
-    with open(fname, 'rb') as f:
-        p_est = pickle.load(f)
-    return p_est
-
 def data_run(freqs, sensor_inds, interval):
     """
     Process the pickled phase estimates from the data in data_run in kay
@@ -604,74 +585,6 @@ def compare_to_snr(f, sensor_ind):
     plt.show()
     plt.close(fig)
 
-def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
-    """
-    Take in the intervals specified in the list of 
-    brackets and return the portions of the time domain
-    and the portions of the phase estimates that 
-    correspond  
-    Input
-    f - float
-        A frequency that you've processed
-    brackets - list of list
-        List of the left index and right index of
-        the low noise segments of that frequency
-    Output - 
-    dom_segs -list of np arrays
-        each element is the relevant domain for
-        corresponding phase estimates
-    pest_segs - list of np arrays
-        each element is a np array
-        of phase ests
-    """
-    pest =get_pest(f, sensor_ind)
-    if detrend_flag == True:
-        pest = detrend(pest)
-    dom = np.linspace(0, pest.size, pest.size)
-    inds = []
-    size = 0
-    dom_segs = []
-    pest_segs = []
-    for bracket in brackets:
-        if bracket[0] > bracket[1]:
-            print(f, bracket)
-            raise(ValueError, 'bracket isn\'t increasing')
-        li = bracket[0]
-        ri = bracket[1]
-        seg = pest[li:ri]
-        dom_seg = dom[li:ri]
-        pest_segs.append(seg)
-        dom_segs.append(dom_seg)
-    return dom_segs, pest_segs
-
-def form_good_alpha(f, brackets, sensor_ind=1, c=1500):
-    """
-    alpha = c*((phi - phi(0))/(2 pi f0) - t)
-    Use the list of good brackets to extract the relevant portions 
-    """
-    pest =get_pest(f, sensor_ind)
-    pest -= pest[0] 
-    dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
-    dm = 1/1500/60
-    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)
-    inds = []
-    d_segs = []
-    alpha_segs = []
-    for bracket in brackets:
-        if bracket[0] > bracket[1]:
-            print(f, bracket)
-            raise(ValueError, 'bracket isn\'t increasing')
-        li = bracket[0]
-        ri = bracket[1]
-        seg = pest[li:ri]
-        dom_seg = dom[li:ri]
-        """ Get time in seconds """
-        t_seg = sec_dom[li:ri]
-        alpha_seg= c*(seg / (2*np.pi*f) - t_seg)
-        alpha_segs.append(alpha_seg)
-        d_segs.append(dom_seg)
-    return d_segs, alpha_segs
-
 def plot_filtered_pest(freqs, mins, sensor_ind=1):
     color_count = 0
     overlap = {name for name in mcd.CSS4_COLORS
@@ -775,7 +688,6 @@ def check_filter(f, brackets, sensor_ind=1):
     plt.close(fig)
     return
 
-
 class SelectFromCollection(object):
     """Select indices from a matplotlib collection using `PolygonSelector`.
 
@@ -836,134 +748,111 @@ class SelectFromCollection(object):
         self.collection.set_facecolors(self.fc)
         self.canvas.draw_idle()
 
-
-def get_brackets(mins, alpha_ests, freqs, use_pickle=True):
-    if use_pickle == True:
-        with open('brackets/brackets.pickle', 'rb') as f:
-            brackets = pickle.load(f)
-            return brackets
-    else:
-        b_objs = []
-        for i in range(len(mins)):
-            n_est = n_ests[i]
-            for j in range(len(freqs)):
-                freq_ests = mins[i][j]
-                for k,bracket in enumerate(freq_ests):
-                    b_obj = Bracket(bracket, i, freqs[j], j, n_est[j][k])
-                    b_objs.append(b_obj)
-        with open('brackets/brackets.pickle', 'wb') as f:
-            pickle.dump(b_objs, f) 
-        return b_objs
-
-
-def form_alpha_noise_est(brackets,use_pickle=True):
+def select_inds(sensor):
+    """ leave the dom alone it's off but I deal with it later in Brackets """
+    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+    for f in freqs:
+        print('-------------- ' + str(f) + ' hz')
+        fig, ax = plt.subplots()
+        pest =get_pest(f, sensor)
+        dom = np.linspace(6.5, 40, pest.size)
+        fig.suptitle(str(f) + ' Hz, sensor ' + str(sensor))
+#       # compare_to_snr(f, 3)
+        pts = ax.scatter(dom[::100], detrend(pest[::100]), s=1)
+        selector = SelectFromCollection(ax, pts)
+        plt.show()
+        selector.disconnect()
+        for x in selector.inds:
+            print('[' + str(dom[100*x[0]]) + ', ' + str(dom[100*x[1]]) + '],')
+   
+def make_5s_bracks(pest):
     """
-    Get sample variance of detrended "good segments" in the alpha
-    variable
-    For list of these sample variances to use as estimates of the noise 
-    variance for each sensor/frequency
-    Input -
-    brackets- list of list of list of list
-        Each sensor has a list of lists corresponding to each freq
-        Each freq has a list of 2-element lists
-        The first element is the start minute of the good seg,
-        second element is the end minute
-    Output -
-        noise_ests - list of list of lists
-        noise_ests[0][0][0] is the variance around a line of the
-        first element at 49 Hz for the first good segment of data
+    Take in a pest, which has sampling rate 1500 Hz
+    Get the full size of it
+    Then return a list of lists
+    Each sublist has a start_ind and end_ind
+    corresponding to sequential 5s chunks of
+    the domain
     """
-    if use_pickle==True:
-        with open('noise/alpha_noise.pickle','rb') as f:
-            est = pickle.load(f)
-            return est
-    noise_ests = []
-    for i, sensor_bracket in enumerate(brackets):
-        freq_ests = []
-        for j, freq in enumerate(freqs):
-            brackets = sensor_bracket[j]
-            dom_segs, pest_segs = form_good_alpha(freq, brackets, i+1)
-            curr_noise_ests = []
-            for k in range(len(pest_segs)):
-                dom, seg = dom_segs[k], pest_segs[k]
-                seg = detrend(seg)
-                noise_var = np.var(seg)
-                curr_noise_ests.append(noise_var)
-            freq_ests.append(curr_noise_ests)
-        noise_ests.append(freq_ests)
-    with open('noise/alpha_noise.pickle', 'wb') as f:
-        pickle.dump(noise_ests, f)
-    return noise_ests
-
-
-
-def plot_lse_results():
-    shallow_inds = [4,6,14,15,16,17,18,19,20]
-    from indices.sensors import mins,freqs
-    nest = form_alpha_noise_est(mins)
-    b_list = get_brackets(mins, nest,freqs, use_pickle=True)
-    b_list = [x for x in b_list if x.f_ind in shallow_inds]
-    b_list = [x for x in b_list if x.bracket[1] < 20]
-    shallow_freqs = [freqs[x] for x in shallow_inds]
+    inds = np.linspace(0, pest.size-1, pest.size, dtype=int)
+    fs = 1500
+    num_samples = 5 *1500 # num samples in a 5s chunk
+    num_bracks = pest.size // num_samples 
+    bracks = []
+    for i in range(num_bracks):
+        start_ind = i*num_samples
+        end_ind = (i+1)*num_samples
+        bracks.append([start_ind, end_ind])
+    return bracks
     
-    filenames = os.listdir('pickles') 
-    names = ['pickles/' + x for x in filenames if x[0:3] == 'sls']
-    theta0s = []
-    theta1s = []
-    sigma0s = []
-    times = []
-    for name in names:
-        with open(name, 'rb') as f:
-            theta, Sigma, alpha_list, curr_sec, curr_ind, open_bracks, new_b_list = pickle.load(f)
-            theta0s.append(theta[0])
-            sigma0s.append(Sigma[0,0])
-            theta1s.append(theta[1])
-            times.append(curr_sec)
-    plt.figure()
-    plt.errorbar(times, theta0s, sigma0s, fmt='o')
-    print(sigma0s) 
 
-    plt.figure()
-    plt.scatter(times, theta1s)
-    plt.show()
+def auto_select_inds(sensor):
+    """ 
+    Develop an automatic detector for the good sections of phase
+    data 
+    Basic idea will be to look at variance of detrended 5s chunks
+    """
+    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+    pest =get_pest(49, sensor)
+    bracks = make_5s_bracks(pest)
+    num_bracks = len(bracks)
+    good_bracks = []
+    print('selecting good indices for sensor ', sensor)
+    for f in freqs:
+        brack_indicator = np.zeros(num_bracks, dtype=bool)
+        f_good_bracks = []
+        print('-------------- ' + str(f) + ' hz')
+        pest =get_pest(f, sensor)
+        detrend(pest, overwrite_data=True)
+        for i in range(num_bracks):
+            brack = bracks[i]
+            data = pest[brack[0]:brack[1]]
+            vals = detrend(data)
+            var = np.var(vals)
+            """ avoid the negative slope ones"""
+            if data[0] < data[-1]:
+                if var < .5:
+                    f_good_bracks.append(brack)
+        good_bracks.append(f_good_bracks)
+    return good_bracks
+                
 
-
-    
+def auto_write_indices():
+    """
+    Use the automatic bracket detector
+    to create a python file with the mins object  
+    for all sensors defined """
+    with open('indices/sensors_auto.py', 'w') as newfile:
+        newfile.write('mins = [')
+        for sensor in range(1,22):
+            newfile.write('[')
+            good_bracks = auto_select_inds(sensor)
+            for i in range(len(freqs)):
+                newfile.write('[')
+                f = freqs[i]
+                bracks = good_bracks[i]
+                dats = get_pest(f, 1)
+                dats = detrend(dats)
+                for j in range(len(bracks)-1):
+                    brack = bracks[j]
+                    vals = dats[brack[0]:brack[1]]
+                    newfile.write('['+str(brack[0])+','+str(brack[1]) + '],')
+                brack = bracks[-1]
+                if i == (len(freqs)-1):
+                    newfile.write('['+str(brack[0])+','+str(brack[1]) + ']]')
+                else:
+                    newfile.write('['+str(brack[0])+','+str(brack[1]) + ']],\n')
+                   # mini_dom = np.linspace(brack[0], brack[1], vals.size, endpoint=False)
+            newfile.write('],\n')
+        newfile.write(']')
+    return
 
 if __name__ == '__main__':
-    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
 #    freqs= [148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+            
+    auto_write_indices()
+#    dats = get_pest(49,1)
+#    print(dats.size)
+#    select_inds(17)
 
-    sensor = 12
-#    for f in freqs:
-#        print('-------------- ' + str(f) + ' hz')
-#        fig, ax = plt.subplots()
-#        pest =get_pest(f, sensor)
-#        dom = np.linspace(6.5, 40, pest.size)
-#        fig.suptitle(str(f))
-##       # compare_to_snr(f, 3)
-#        pts = ax.scatter(dom[::100], detrend(pest[::100]), s=1)
-#        selector = SelectFromCollection(ax, pts)
-#        plt.show()
-#        selector.disconnect()
-#        for x in selector.inds:
-#            print('[' + str(dom[100*x[0]]) + ', ' + str(dom[100*x[1]]) + '],')
-
-#    freqs = freqs[-5:]
-#    mins = mins[-5:]
-#    for i, f in enumerate(freqs):
-#        print('frequency', f)
-#        brackets = mins[i]
-#        total_mins = sum([x[1]-x[0] for x in brackets])
-#        print('total mins', total_mins)
-#        check_filter(f, brackets, sensor_ind=1)
-#
-
-#
-    
-#    from indices.sensor10 import mins
-#    plot_lin_reg_good(freqs[:14],mins[:14],10)
-#    plt.show()
-
-
-    #plot_lse_results()

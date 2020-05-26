@@ -83,8 +83,8 @@ if __name__ == '__main__':
         sensor1 = get_sensor_i(s, i)
 #    dec_sensor = sensor1[::10]
         sensor1 = sensor1 - np.mean(sensor1)
-        sensor1 = sensor1[int(6.5*60*1500):40*60*1500]
-        np.save('npy_files/sensor' + str(i+1) + '.npy', sensor1)
+        sensor1 = sensor1[int(40*60*1500):75*60*1500]
+        np.save('npy_files/sensor' + str(i+1) + 'cpa.npy', sensor1)
 
 
     #freqs, vals = single_sensor_fft(short_sens, 2048, 1)
