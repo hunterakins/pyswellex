@@ -2,6 +2,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import pickle
 from scipy.signal import detrend
+import sys
 
 '''
 Description:
@@ -20,6 +21,17 @@ def get_pest(f0, s_ind):
     s_ind - int >= 1
     """
     fname = 'pickles/kay_s' + str(s_ind) + 'pest_' + str(int(f0)) + '.pickle'
+    with open(fname, 'rb') as f:
+        p_est = pickle.load(f)
+    return p_est
+
+def get_cpa_pest(f0, s_ind):
+    """
+    Fetch the pickled phase estimate corresponding to 
+    frequency f0 and sensor s_ind
+    s_ind - int >= 1
+    """
+    fname = '/media/hunter/ExtHard/pickles/kay_s' + str(s_ind) + 'cpapest_' + str(int(f0)) + '.pickle'
     with open(fname, 'rb') as f:
         p_est = pickle.load(f)
     return p_est
@@ -74,16 +86,24 @@ def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
         dom_segs.append(dom_seg)
     return dom_segs, pest_segs
 
-def form_good_alpha(f, brackets, sensor_ind=1, c=1500):
+def form_good_alpha(f, brackets, sensor_ind=1, c=1500,cpa=False):
     """
     alpha = c*((phi - phi(0))/(2 pi f0) - t)
     Use the list of good brackets to extract the relevant portions 
     """
-    pest =get_pest(f, sensor_ind)
-    pest -= pest[0] 
-    dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
-    dm = 1/1500/60
-    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)
+    if cpa == False:
+        pest =get_pest(f, sensor_ind)
+        pest -= pest[0] 
+        dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
+        dm = 1/1500/60
+        sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)
+    else:
+        pest =get_cpa_pest(f, sensor_ind)
+        pest -= pest[0] 
+        dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
+        ds = 1/1500
+        sec_dom = np.linspace(0, (35*60-ds), pest.size)
+        
     inds = []
     d_segs = []
     alpha_segs = []
@@ -121,9 +141,22 @@ def correct_bad_domain(bracket):
     end = int((end_min-6.5) / dm)
     return start_min, end_min, start, end
 
+def  cpa_domain(bracket):
+    """
+    Input - 
+        bracket - list of floats
+            floats represent minutes in seconds
+    """
+    min_dom = np.arange(40, 75-1/1500/60, 1/1500/60)
+    end = bracket[1]-1
+    start = bracket[0]
+    start_min = min_dom[start]
+    end_min = min_dom[end]
+    return start_min, end_min, start, end
+
 class Bracket:
     """ Bracket of good data """
-    def __init__(self, bracket, sensor_ind, freq, f_ind, alpha_var=None):
+    def __init__(self, bracket, sensor_ind, freq, f_ind, alpha_var=None,cpa=False):
         """ 
         Input 
             bracket - list, bracket[0] is start in mins, bracket[1] is end
@@ -133,6 +166,11 @@ class Bracket:
                 frequency band
             f_ind - int
                 index of the frequency in the ''canonical list''
+            alpha_var - None type or float  
+                the variance of the rescaled phase rate for the bracket
+            cpa - bool
+                whether or not i'm processing the [6.5,40) minute or the [40, 75) minute sections
+            
         """
         """ I had to correct for an error I made in assigning 
         the minute values to the brackets....
@@ -140,8 +178,12 @@ class Bracket:
         a domain from 6.5 to 40 - (1/1500 / 60) which
         is the sampling rate in mins
         I correc the mins, then use them to get the right index
+
         """
-        start_min, end_min, start, end = correct_bad_domain(bracket)
+        if cpa == False:
+            start_min, end_min, start, end = correct_bad_domain(bracket)
+        else: # if cpa is true, then i give it in inds
+            start_min, end_min, start,end = cpa_domain(bracket)
         """ Minutes corresponding to first and last sample """
         self.start_min, self.end_min = start_min, end_min
         """ index of start and end of bracket (in the domain (0, pest.size, pest.size)"""
@@ -154,6 +196,7 @@ class Bracket:
         self.alpha0=None
         self.dom = None
         self.data = None
+        self.cpa=cpa
 
     def add_alpha_var(self):
         if type(self.data) == type(None):
@@ -171,7 +214,7 @@ class Bracket:
         self.alpha0 = alpha0
 
     def get_data(self,c=1500):
-        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.sensor, c)
+        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.sensor, c, self.cpa)
         if type(self.alpha0) != type(None):
             x0= alpha_segs[0][0]
             diff = self.alpha0 - x0
@@ -182,79 +225,6 @@ class Bracket:
 
     def __repr__(self):
         return "Bracket for sensor {:d} at frequency {:d} starting at minute {:.2f} and ending at minute {:.2f}".format(self.sensor, self.freq, self.start_min, self.end_min)
-
-#def form_noise_est(brackets):
-#    """
-#    Get sample variance of detrended "good segments"
-#    For list of these sample variances to use as estimates of the noise 
-#    variance for each sensor/frequency
-#    Input -
-#    brackets- list of list of list of list
-#        Each element is a list corresponding to a sensor
-#        Each sensor has a list corresponding to each freq
-#        Each freq has a list of 2-element lists
-#        The first element is the start minute of the good seg,
-#        second element is the end minute
-#    Output -
-#        noise_ests - list of list of lists
-#        noise_ests[0][0][0] is the variance around a line of the
-#        first element at 49 Hz for the first good segment of data
-#    """
-#    noise_ests = []
-#    for i, sensor_bracket in enumerate(brackets):
-#        freq_ests = []
-#        for j, freq in enumerate(freqs):
-#            brackets = sensor_bracket[j]
-#            dom_segs, pest_segs = form_good_pest(freq, brackets, i+1,detrend_flag=True)
-#            curr_noise_ests = []
-#            for seg in pest_segs:
-#                seg = detrend(seg)
-#                noise_var = np.var(seg)
-#                curr_noise_ests.append(noise_var)
-#            freq_ests.append(curr_noise_ests)
-#        noise_ests.append(freq_ests)
-#    return noise_ests
-#
-#def form_alpha_noise_est(brackets,freqs,use_pickle=False,c=1500):
-#    """
-#    Get sample variance of detrended "good segments" in the alpha
-#    variable
-#    For list of these sample variances to use as estimates of the noise 
-#    variance for each sensor/frequency
-#    Input -
-#    brackets- list of list of list of list
-#        Each sensor has a list of lists corresponding to each freq
-#        Each freq has a list of 2-element lists
-#        The first element is the start minute of the good seg,
-#        second element is the end minute
-#    Output -
-#        noise_ests - list of list of lists
-#        noise_ests[0][0][0] is the variance around a line of the
-#        first element at 49 Hz for the first good segment of data
-#    """
-#    if use_pickle==True:
-#        with open('noise/alpha_noise.pickle','rb') as f:
-#            est = pickle.load(f)
-#            return est
-#    noise_ests = []
-#    for i, sensor_bracket in enumerate(brackets):
-#        freq_ests = []
-#        for j, freq in enumerate(freqs):
-#            brackets = sensor_bracket[j]
-#            dom_segs, pest_segs = form_good_alpha(freq, brackets, i+1,c)
-#            curr_noise_ests = []
-#            for k in range(len(pest_segs)):
-#                dom, seg = dom_segs[k], pest_segs[k]
-#                if dom.size == 0:
-#                    print(brackets)
-#                seg = detrend(seg)
-#                noise_var = np.var(seg)
-#                curr_noise_ests.append(noise_var)
-#            freq_ests.append(curr_noise_ests)
-#        noise_ests.append(freq_ests)
-#    with open('noise/alpha_noise.pickle', 'wb') as f:
-#        pickle.dump(noise_ests, f)
-#    return noise_ests
 
 def get_brackets(mins, freqs, use_pickle=True):
     if use_pickle == True:
@@ -274,36 +244,109 @@ def get_brackets(mins, freqs, use_pickle=True):
             pickle.dump(b_objs, f) 
         return b_objs
 
-def cleanup_autobrackets(brackets, use_pickle=True):
+def get_cpa_brackets(mins, freqs, use_pickle=True):
     if use_pickle == True:
-        with open('brackets/clean_autobrackets.pickle', 'rb') as f:
+        with open('brackets/cpabrackets.pickle', 'rb') as f:
             brackets = pickle.load(f)
             return brackets
-    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
-    dom = np.linspace(6.5, 40, 3015000)
-#    vrs = []
-    clean_bracks = []
-    for f in freqs:
-        bracks = [x for x in brackets if x.freq == f]
-        for j in range(21):
-            data = get_pest(f, j+1)
-            detrend(data, overwrite_data=True)
-            sensor_bracks = [x for x in bracks if x.sensor == j+1]
-            sensor_bracks = [x for x in sensor_bracks if data[x.end] > data[x.start]]
-            mean_slope = np.mean(np.array([data[x.end] - data[x.start] for x in sensor_bracks]))
-            sensor_bracks = [x for x in sensor_bracks if ((data[x.end] - data[x.start]) < 2*mean_slope)] 
-            print(mean_slope)
-            for x in sensor_bracks:
-                clean_bracks.append(x)
-    with open('brackets/clean_autobrackets.pickle', 'wb') as f:
-        pickle.dump(clean_bracks, f)
+    else:
+        b_objs = []
+        for i in range(len(mins)):
+            for j in range(len(freqs)):
+                freq_ests = mins[i][j]
+                for k,bracket in enumerate(freq_ests):
+                    b_obj = Bracket(bracket, i+1, freqs[j], j,cpa=True)
+                    #b_obj.add_alpha_var()
+                    b_objs.append(b_obj)
+        with open('brackets/cpabrackets.pickle', 'wb') as f:
+            pickle.dump(b_objs, f) 
+        return b_objs
+
+def cleanup_autobrackets(brackets, use_pickle=True, cpa=False):
+    """
+    Some little hacky algorithm that tosses out the bad brackets
+    of the automatically selected brackets
+    cpa=True means that the brackets correspond to minutes
+    40 to 75, cpa=False means that the brackets correspond to 6.5 to 40
+    """
+    if cpa == False:
+        if use_pickle == True:
+            with open('brackets/clean_autobrackets.pickle', 'rb') as f:
+                brackets = pickle.load(f)
+                return brackets
+        freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+        dom = np.linspace(6.5, 40, 3015000)
+    #    vrs = []
+        clean_bracks = []
+        for f in freqs:
+            bracks = [x for x in brackets if x.freq == f]
+            for j in range(21):
+                data = get_pest(f, j+1)
+                detrend(data, overwrite_data=True)
+                sensor_bracks = [x for x in bracks if x.sensor == j+1]
+                sensor_bracks = [x for x in sensor_bracks if data[x.end] > data[x.start]]
+                mean_slope = np.mean(np.array([data[x.end] - data[x.start] for x in sensor_bracks]))
+                sensor_bracks = [x for x in sensor_bracks if ((data[x.end] - data[x.start]) < 2*mean_slope)] 
+                print(mean_slope)
+                for x in sensor_bracks:
+                    clean_bracks.append(x)
+        with open('brackets/clean_autobrackets.pickle', 'wb') as f:
+            pickle.dump(clean_bracks, f)
+    if cpa == True:
+        if use_pickle == True:
+            with open('brackets/clean_cpaautobrackets.pickle', 'rb') as f:
+                brackets = pickle.load(f)
+                return brackets
+        freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+    #    vrs = []
+        clean_bracks = []
+        for f in freqs:
+            bracks = [x for x in brackets if x.freq == f]
+            for j in range(21):
+                sensor_bracks = [x for x in bracks if x.sensor == j+1]
+                dats = detrend(get_cpa_pest(f, sens[j+1]))
+                for x in sensor_bracks:
+                    vals = dats[x.start:x.end]
+                    tmp = detrend(vals)
+                    if np.var(tmp) < .6:
+                        clean_bracks.append(x)
+        with open('brackets/clean_cpaautobrackets.pickle', 'wb') as f:
+            pickle.dump(clean_bracks, f)
     return clean_bracks
 
-def get_autobrackets(mins, freqs, use_pickle=True):
-    if use_pickle == True:
-        with open('brackets/clean_autobrackets.pickle', 'rb') as f:
+def get_autobrackets(mins, freqs, use_pickle=True,cpa=False):
+    if cpa == False:
+        if use_pickle == True:
+            with open('brackets/clean_autobrackets.pickle', 'rb') as f:
+                brackets = pickle.load(f)
+                return brackets
+    else:
+        with open('brackets/cpabrackets.pickle', 'rb') as f:
             brackets = pickle.load(f)
             return brackets
+
+def get_cpa_auto_inds_in_mins():
+    """ Convert the indices produced by
+    the automatic segment detector to the 
+    WRONG mins thing I did early, all so I can
+    correct it back when I instantiate the brackets..."""
+    from indices.cpasensors_auto import mins
+    pest = get_cpa_pest(232, 1)
+    num_samples=pest.size
+    dm = 1/1500/60
+    min_dom = np.linspace(40, 75-dm, num_samples)
+    dmm = min_dom[1] - min_dom[0]
+    print(dmm)
+    min_dom = np.arange(40, 75-1/1500/60, 1/1500/60)
+    for i in range(len(mins)): # sensors
+        sensor_bracks = mins[i]
+        num_freqs = len(sensor_bracks)
+        for j in range(num_freqs):
+            f_bracks = sensor_bracks[j]
+            for k in range(len(f_bracks)):
+                brack = f_bracks[k]
+                mins[i][j][k] = [min_dom[brack[0]], min_dom[brack[1]-1]]
+    return mins
     
 def get_auto_inds_in_mins():
     """ Convert the indices produced by
@@ -325,16 +368,34 @@ def get_auto_inds_in_mins():
 
 
 if __name__ == '__main__':
+    cpa_domain([40, 41])
     #freqs = [127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385]
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
-    mins = get_auto_inds_in_mins() 
-    brackets  =get_brackets(mins, freqs, False)
-    clean_bracks = cleanup_autobrackets(brackets)
-    bracks = [x for x in clean_bracks if x.freq == 127]
+    #freqs = [201, 235, 283, 338, 388, 232, 280, 335, 385]
+    #freqs = [283]
+
+
+    """ Process first segment brackets """
+    #mins = get_auto_inds_in_mins()
+    #brackets = get_brackets(mins, freqs, use_pickle=True)
+    #cleanup_autobrackets(brackets, use_pickle=True)
+    #sys.exit(0)
+    
+    from indices.cpasensors_auto import mins
+    brackets = get_cpa_brackets(mins, freqs, True)
+    sys.exit(0)
+    
+    #mins = get_cpa_auto_inds_in_mins() 
+    brackets = get_autobrackets(mins, freqs,cpa=True)
+    #brackets  =get_brackets(mins, freqs, False)
+    #clean_bracks = cleanup_autobrackets(brackets, False)
+    bracks = [x for x in brackets if x.freq in freqs]
     for j in range(21):
         sens = j+1
         s_bracks = [x for x in bracks if x.sensor == sens]
-        dats = detrend(get_pest(127, sens))
-        for x in s_bracks:
-            plt.plot(dats[x.start:x.end])
+        dats = detrend(get_cpa_pest(freqs[0], sens))
+        for x in s_bracks[-30:]:
+            dom,vals = x.get_data()
+            tmp = detrend(vals)
+            plt.plot(dom,vals,color='r')
         plt.show()

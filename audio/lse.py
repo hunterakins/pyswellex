@@ -2,11 +2,10 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from swellex.audio.indices.sensors import freqs, mins
-from swellex.audio.proc_phase import form_good_pest, form_good_alpha, get_pest
 from scipy.signal import detrend
 import pickle
 import time
-from swellex.audio.brackets import Bracket, get_brackets, get_autobrackets
+from swellex.audio.brackets import Bracket, get_brackets, get_autobrackets,form_good_pest, form_good_alpha, get_pest, get_cpa_pest
 
 
 '''
@@ -282,7 +281,7 @@ def seq_least_squares(b_list, num_f, df, poly_order, theta, Sigma, start_ind, ba
     """
    
     """ Get total number of samples in the data record """ 
-    _ = get_pest(49, 1)
+    _ = get_pest(232, 1)
     num_samples =  _.size
 
     """ Form the domain in seconds, since I use seconds in my
@@ -437,7 +436,7 @@ def form_alpha_est(times, num_f, df, theta):
 
 def compare_sls_to_batch(): 
     """ Form minute domain, secon domain """
-    pest = get_pest(49, 1)
+    pest = get_pest(232, 1)
     dm = 1/1500/60
     min_dom = np.linspace(6.5, 40-dm, pest.size)
     sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
@@ -500,7 +499,7 @@ def compare_sls_to_batch():
 def run_long_sls():
     """ Perform a sequential inversion on the 5 minutes, using
     the first 5 seconds to seed the sequential thing """
-    pest = get_pest(49, 1)
+    pest = get_pest(232, 1)
     sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
 
     """ Fetch the bracket list """
@@ -615,7 +614,7 @@ def lin_offset_alpha(brack, start_ind, chunk_size,recalc_var=False):
             brack.alpha_var = alpha_var
     return
 
-def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recomp_bracks=False):
+def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recomp_bracks=False,cpa=False):
     """
     Perform an estimate alpha dot for a series of chunks of length chunk_len(seconds)
     Break data up into chunks
@@ -626,12 +625,17 @@ def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recom
     chunk_len - float
         lenght of each chunk in seconds
     """
-    pest = get_pest(49, 1)
-    sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
+    if cpa == False:
+        pest = get_pest(232, 1)
+        dm = 1/1500/60
+        sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)    
+    if cpa == True:
+        pest = get_cpa_pest(232, 1)
+        sec_dom = np.linspace(0, 35*60 - 1/1500, pest.size)
 
     """ Fetch the bracket list """
 #    b_list = get_brackets(mins, freqs, use_pickle=(not recomp_bracks))
-    b_list = get_autobrackets(mins, freqs) # this fetches all the brackets
+    b_list = get_autobrackets(mins, freqs,cpa=cpa) # this fetches all the brackets
 
     b_list = [x for x in b_list if x.freq in freqs]
     poly_order = 1
@@ -643,12 +647,12 @@ def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recom
 
     """ Get number of chunks. It throws out some data at the end """
     chunk_size = int(1500*chunk_len)
-    num_chunks = int(total_len // chunk_size)-1
+    num_chunks = int(total_len // chunk_size)
     theta_chunks = []
     sigma_chunks = []
 
     
-    for chunk in range(num_chunks):
+    for chunk in range(num_chunks-1, num_chunks):
         start_ind = chunk_size*chunk
         print('start ind', start_ind, start_ind/1500/60 + 6.5)
         end_ind = start_ind + chunk_size
@@ -656,6 +660,7 @@ def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recom
 
         """ These brackets will be used """
         opening_bracks = [x for x in b_list if (((x.start < start_ind) and (x.end > start_ind)) or ((x.start >= start_ind) and (x.start < end_ind)))]
+        print('end ind', end_ind)
 
 
         if len(opening_bracks) == 0:
@@ -687,7 +692,6 @@ def look_at_long_run():
     with open('pickles/sls_result.pickle', 'rb') as f:
         theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = pickle.load(f)
 
-    print(theta)
 
 def look_at_chunk_both():
     with open('goddamn.txt', 'r') as f:
@@ -733,21 +737,37 @@ class AlphaEst:
         Take in a t0 (in seconds) and offset tgrid """
         self.tgrid += t0
         return
+
+    def make_range_grid(self,r0):
+        rgrid = []
+        rgrid.append(r0)
+        rcurr = r0
+        for i in range(len(self.tgrid)):
+            rcurr += theta_list[i][0]*chunk_len
+            rgrid.append(rcurr)
+        return rgrid
+            
+            
+        
+        
         
         
 
 if __name__ == '__main__':
     start = time.time()
-    _ = get_pest(49,1)
+    _ = get_pest(232,1)
     dm = 1/1500/60
     chunk_len = 10
     #look_at_chunk_both()
-    #shallow_freqs = [232, 280, 335, 385]
+    shallow_freqs = [232,280,335,385]
     #shallow_freqs = [280]
-    deep_freqs = [201, 235, 283]#, 338, 388]
-    #pickle_name = 'pickles/chunk_10s_auto_shallow_280Hz.pickle'
-    pickle_name = 'pickles/chunk_10s_auto_deep_201_235_283_freqs.pickle'
-    theta, sigma = compute_chunk_estimate(chunk_len, pickle_name, deep_freqs, recalc_var=True, recomp_bracks=False)
+    deep_freqs = [201, 235, 283, 338, 388]
+    for f in shallow_freqs:
+        pickle_name = 'pickles/chunk_10s_auto_shallow_'+str(f)+'_freqs_last_msmt.pickle'
+        theta, sigma = compute_chunk_estimate(chunk_len, pickle_name, [f], recalc_var=True, recomp_bracks=False,cpa=False)
 
+    #for f in deep_freqs:
+    #    pickle_name = 'pickles/chunk_10s_auto_deep_'+str(f)+'_freqs.pickle'
+    #    theta, sigma = compute_chunk_estimate(chunk_len, pickle_name, [f], recalc_var=True, recomp_bracks=False)
     end = time.time()
     print('total time', end-start)

@@ -7,7 +7,7 @@ import matplotlib._color_data as mcd
 #from lse import get_brackets
 from matplotlib.widgets import PolygonSelector
 from matplotlib.path import Path
-from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest
+from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest, get_cpa_pest
 
 '''
 Description:
@@ -786,14 +786,17 @@ def make_5s_bracks(pest):
     return bracks
     
 
-def auto_select_inds(sensor):
+def auto_select_inds(sensor,cpa=False):
     """ 
     Develop an automatic detector for the good sections of phase
     data 
     Basic idea will be to look at variance of detrended 5s chunks
     """
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
-    pest =get_pest(49, sensor)
+    if cpa==True:
+        pest =get_cpa_pest(49, sensor)
+    else: 
+        pest = get_pest(49, sensor)
     bracks = make_5s_bracks(pest)
     num_bracks = len(bracks)
     good_bracks = []
@@ -802,7 +805,10 @@ def auto_select_inds(sensor):
         brack_indicator = np.zeros(num_bracks, dtype=bool)
         f_good_bracks = []
         print('-------------- ' + str(f) + ' hz')
-        pest =get_pest(f, sensor)
+        if cpa == True:
+            pest =get_cpa_pest(f, sensor)
+        else: 
+            pest = get_pest(f, sensor)
         detrend(pest, overwrite_data=True)
         for i in range(num_bracks):
             brack = bracks[i]
@@ -810,38 +816,42 @@ def auto_select_inds(sensor):
             vals = detrend(data)
             var = np.var(vals)
             """ avoid the negative slope ones"""
-            if data[0] < data[-1]:
-                if var < .5:
-                    f_good_bracks.append(brack)
+            if var < .5:
+                f_good_bracks.append(brack)
         good_bracks.append(f_good_bracks)
     return good_bracks
-                
 
-def auto_write_indices():
+def auto_write_indices(fname, cpa=False):
     """
     Use the automatic bracket detector
     to create a python file with the mins object  
     for all sensors defined """
-    with open('indices/sensors_auto.py', 'w') as newfile:
+    with open(fname, 'w') as newfile:
         newfile.write('mins = [')
         for sensor in range(1,22):
             newfile.write('[')
-            good_bracks = auto_select_inds(sensor)
+            good_bracks = auto_select_inds(sensor, cpa)
             for i in range(len(freqs)):
                 newfile.write('[')
                 f = freqs[i]
                 bracks = good_bracks[i]
-                dats = get_pest(f, 1)
-                dats = detrend(dats)
-                for j in range(len(bracks)-1):
-                    brack = bracks[j]
-                    vals = dats[brack[0]:brack[1]]
-                    newfile.write('['+str(brack[0])+','+str(brack[1]) + '],')
-                brack = bracks[-1]
-                if i == (len(freqs)-1):
-                    newfile.write('['+str(brack[0])+','+str(brack[1]) + ']]')
+                if cpa == True:
+                    dats = get_cpa_pest(f, 1)
                 else:
-                    newfile.write('['+str(brack[0])+','+str(brack[1]) + ']],\n')
+                    dats = get_pest(f,1)
+                dats = detrend(dats)
+                if bracks == []:
+                    newfile.write('[]')
+                else:
+                    for j in range(len(bracks)-1):
+                        brack = bracks[j]
+                        vals = dats[brack[0]:brack[1]]
+                        newfile.write('['+str(brack[0])+','+str(brack[1]) + '],')
+                    brack = bracks[-1]
+                    if i == (len(freqs)-1):
+                        newfile.write('['+str(brack[0])+','+str(brack[1]) + ']]')
+                    else:
+                        newfile.write('['+str(brack[0])+','+str(brack[1]) + ']],\n')
                    # mini_dom = np.linspace(brack[0], brack[1], vals.size, endpoint=False)
             newfile.write('],\n')
         newfile.write(']')
@@ -851,7 +861,7 @@ if __name__ == '__main__':
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
 #    freqs= [148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
             
-    auto_write_indices()
+    auto_write_indices(cpa=True)
 #    dats = get_pest(49,1)
 #    print(dats.size)
 #    select_inds(17)
