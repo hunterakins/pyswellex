@@ -1,9 +1,9 @@
 import numpy as np
+import sys
 import matplotlib
-matplotlib.use('Qt5Agg')
 from matplotlib import pyplot as plt
 from scipy.stats import mode
-from scipy.signal import convolve, firwin, get_window, detrend
+from scipy.signal import convolve, firwin, get_window, detrend, find_peaks
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 from swellex.audio.lse import AlphaEst
@@ -136,55 +136,103 @@ def compare_gps_phase_deep(gps_range_km, ests):
         plt.plot(freq_diffs[:])
     plt.show()
 
-
-def proc_shallow():
+def proc_shallow(chunk_len, tscc=False, plot_resids=False):
     """ Just a poorly thought out script that 
-    a) estimates the bias for each frequency (turns out to be pretty much .97 for all)
-    b) corrects the estimates of velocity from the phase measurements and converts them 
-    to unbiased estimates (using the GPS)
-    c) saves the corrected velocities
+    a ) applies the heuristic bias of .97
+    b ) computes an unweighted average over the different frequency bands
+    c ) Throws out some egregious outliers
+    d ) looks at the distribution of the residuals
     """
 
     """ First get the estimates """
     s_freqs = [232, 280,335,385]
     ests = []
     for sf in s_freqs:
-        pickle_name = '../audio/pickles/10s_shallow_complete_' + str(sf) + '.pickle'
-        v_est= get_est(pickle_name)
-        v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
-        v_est.get_t_grid()
-        v_est.add_t0(6.5*60)
-        ests.append(v_est)
+        if tscc==False:
+            pickle_name = '../audio/pickles/' + str(chunk_len) +'s_shallow_complete_' + str(sf) + '.pickle'
+            v_est= get_est(pickle_name)
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.get_t_grid()
+            v_est.add_t0(6.5*60)
+            ests.append(v_est)
+        else: 
+            pickle_name = '../audio/pickles/' + str(chunk_len) + '_' + str(sf) +'.pickle'
+            v_est= get_est(pickle_name)
+            for i in range(len(v_est.thetas)):
+                x = v_est.thetas[i]
+                if x == 0:
+                    x = np.zeros(v_est.thetas[0].shape)
+                    v_est.thetas[i] = x
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.thetas = v_est.thetas[:-1]
+            v_est.get_t_grid()
+            ests.append(v_est)
 
 
-    """ Now get the biases """
+    """Correct the wavenumber bias """
+    #for est in ests:
+    #    thetas = est.thetas
+    #    for i in range(len(thetas)):
+    #        if thetas[i] < 0:
+    #            thetas[i] = thetas[i]*.97
+    #        else:
+    #            thetas[i] = thetas[i]*.97
+
+
+    """ Load GPS for comparison"""
 #    plt.plot(v_est.tgrid/60, mean_est)#, yerr=np.sqrt(sigma))
 
     gps_range_km, lat, lon, gps_time = load_track()
     gps_vel = get_velocity(gps_time, gps_range_km)
-    #ests = load_shallow_unbiased()
-#    bias_factors = compare_gps_phase(gps_range_km,  ests)
-    bias_factors=[.97]*len(s_freqs)
-    for i in range(len(ests)):
-        print(bias_factors[i])
-        ests[i].thetas = bias_factors[i]*ests[i].thetas
         
-
-
     plt.figure()
-    plt.suptitle("Shallow source estimates")
+    if tscc == False:
+        plt.suptitle("Shallow source estimates")
+    else:
+        plt.suptitle("Shallow source using full array")
 
-    """ Compute the mean estimate and also plot the phase derived velocities"""
+    """ Compute the mean estimate """ 
     ind = False
     mean_est = np.zeros(ests[0].thetas.shape)
     for i in range(len(ests)):
         v_est=ests[i]
         mean_est += v_est.thetas
         plt.plot(v_est.tgrid/60, v_est.thetas, alpha=.4)#, yerr=np.sqrt(sigma))
-
     mean_est /= len(s_freqs)
 
+    """ Compute the residuals from the mean and identify outliers """
+    diffs = np.zeros((len(s_freqs), mean_est.size))
+
+    for i in range(len(s_freqs)):
+        v_est= ests[i]
+        diffs[i,:] = mean_est- v_est.thetas
+
+    errs = np.var(diffs, axis=0)
+    mean_inds = []
+    mean_err = np.mean(errs)
+    
+    """ Identify outliers and update the mean est """
+    """ Also update the errorbars """
+    outlier_inds = []
+    for i in range(len(errs)):
+        if errs[i] > 3*mean_err:
+            msmts = [x.thetas[i] for x in ests]
+            med = np.median(msmts)
+            diff = np.array([abs(x-med) for x in msmts])
+            bad_ind = np.argmax(diff)
+            outlier_inds.append([bad_ind, i])
+            okay_msmts = [msmts[i] for i in range(len(ests)) if i != bad_ind]
+            outlier_inds.append([bad_ind,i])
+            mean_est[i] = np.mean(okay_msmts)
+            new_err = np.var([mean_est[i] - x for x in okay_msmts])
+            errs[i] = new_err
+
     """ Plot the velocity estimates with GPS estimates"""
+    ind_partition = (40-6.5)*(60//chunk_len)
+    ind_partition = int(ind_partition)
+    np.save('npys/'+str(chunk_len) + 's_shallow_range_rate.npy', mean_est)
+    np.save('npys/'+str(chunk_len) + 's_shallow_range_rate_first.npy', mean_est[:ind_partition])
+    np.save('npys/'+str(chunk_len) + 's_shallow_range_rate_cpa.npy', mean_est[ind_partition:])
 
     plt.plot(v_est.tgrid/60, mean_est, color='black')
     plt.scatter(gps_time[6:], gps_vel[6:],marker='x',color='red',s=9)
@@ -192,32 +240,35 @@ def proc_shallow():
     plt.ylim([3, -3])
     plt.xlabel('Time (mins)')
     plt.ylabel('Range rate (m/s)')
+    if tscc == False:
+        print("Mean std dev", np.mean(np.sqrt(errs)))
+    else:
+        print("Mean std dev", np.mean(np.sqrt(errs[78:])))
 
-    """ Compute the residuals from the mean """
-    diffs = np.zeros((len(s_freqs), mean_est.size))
-
-    for i in range(len(s_freqs)):
-        v_est= ests[i]
-        diffs[i,:] = mean_est- v_est.thetas
-    
-    errs = np.var(diffs, axis=0)
     plt.errorbar(v_est.tgrid/60, mean_est, np.sqrt(errs),fmt='o',color='black',ecolor='gray',elinewidth=1,ms=3,capsize=2)
 
 
     """ Look at residuals from the mean curve to see if they
     look gaussian """
-    plt.figure()
-    ret= plt.hist(diffs.flatten(), 200, density=True)
-    vals, x = ret[0], ret[1]
-    means = np.mean(diffs, axis=1)
-    variances = np.var(diffs, axis=1)
-    var = np.var(diffs.flatten())
-    mean = np.mean(diffs.flatten())
-    vals = np.exp(-np.square(x-mean) / (2*var)) / np.sqrt(2*np.pi*var)
-    plt.plot(x, vals)
-    plt.xlabel('Residual')
-    plt.ylabel('Probability')
-    print(mean,np.sqrt(var))
+    """ knock out the outliers """
+    for j in range(len(errs)):
+        for i in range(len(s_freqs)):
+            if [i,j] in outlier_inds:
+                diffs[i,j] = 0
+            
+
+    if plot_resids == True:
+        plt.figure()
+        ret= plt.hist(diffs.flatten(), 200, density=True)
+        vals, x = ret[0], ret[1]
+        means = np.mean(diffs, axis=1)
+        variances = np.var(diffs, axis=1)
+        var = np.var(diffs.flatten())
+        mean = np.mean(diffs.flatten())
+        vals = np.exp(-np.square(x-mean) / (2*var)) / np.sqrt(2*np.pi*var)
+        plt.plot(x, vals)
+        plt.xlabel('Residual')
+        plt.ylabel('Probability')
     #for i in range(6):
     #    plt.figure()
     #    ret= plt.hist(diffs[i,:], 100, density=True)
@@ -226,14 +277,247 @@ def proc_shallow():
     #    plt.plot(x, vals)
     #    pass
         
-    plt.show()
+    #plt.show()
     with open('../audio/pickles/shallow_ests_unbiased.pickle', 'wb') as f:
         pickle.dump(ests,f)
-    return
+    return mean_est
 
-def load_shallow_unbiased():
-    with open('../audio/pickles/shallow_ests_unbiased.pickle', 'rb') as f:
-        ests= pickle.load(f)
+def proc_deep(chunk_len, tscc=False, plot_resids=False):
+    """ A copy of proc_shallow for the deep source more or less
+    Basically trying to make a nice plot comparing GPS and 
+    phase derived range rate
+    """
+
+    """ First get the estimates """
+    d_freqs = [235, 283,338,388]
+    ests = []
+    flag = False
+    for df in d_freqs:
+        if tscc==False:
+            pickle_name = '../audio/pickles/' + str(chunk_len) + 's_deep_complete_' + str(df) + '.pickle'
+            v_est= get_est(pickle_name)
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.get_t_grid()
+            """ deal with gaps in data """
+            if flag == False:
+                inds = [i for i in range(len(v_est.thetas)) if v_est.thetas[i] == 0]
+                flag = True
+            v_est.add_t0(6.5*60)
+            v_est.thetas = [v_est.thetas[i] for i in range(len(v_est.thetas)) if i not in inds]
+            v_est.thetas = np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.tgrid = np.array([v_est.tgrid[i] for i in range(len(v_est.tgrid)) if i not in inds])
+            ests.append(v_est)
+        else: 
+            pickle_name = '../audio/pickles/' + str(chunk_len) + '_' + str(df) +'.pickle'
+            v_est= get_est(pickle_name)
+            for i in range(len(v_est.thetas)):
+                x = v_est.thetas[i]
+                if x == 0:
+                    x = np.zeros(v_est.thetas[0].shape)
+                    v_est.thetas[i] = x
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.thetas = v_est.thetas[:-1]
+            v_est.get_t_grid()
+            ests.append(v_est)
+
+
+    """ Biases are assumed to by around .97 """
+
+    gps_range_km, lat, lon, gps_time = load_track()
+    gps_vel = get_velocity(gps_time, gps_range_km)
+    #ests = load_shallow_unbiased()
+#    bias_factors = compare_gps_phase(gps_range_km,  ests)
+    bias_factors=[.97]*len(d_freqs)
+    for i in range(len(ests)):
+        ests[i].thetas = bias_factors[i]*ests[i].thetas
+
+    plt.figure()
+    if tscc == False:
+        plt.suptitle("Deep source estimates")
+    else:
+        plt.suptitle("Deep source all sensors")
+
+    """ Compute the mean estimate and also plot the phase derived velocities"""
+    ind = False
+    mean_est = np.zeros(ests[0].thetas.shape)
+    for i in range(len(ests)):
+        v_est=ests[i]
+        thetas = v_est.thetas
+        mean_est += thetas
+        plt.plot(v_est.tgrid/60, v_est.thetas, alpha=.4)#, yerr=np.sqrt(sigma))
+
+
+
+    mean_est /= len(d_freqs)
+
+    """ remove outlier """
+    np.save('npys/'+str(chunk_len) + 's_deep_range_rate.npy', mean_est)
+    ind_partition = (40-6.5)*(60//chunk_len)
+    ind_partition = int(ind_partition)
+    np.save('npys/'+str(chunk_len) + 's_deep_range_rate.npy', mean_est)
+    np.save('npys/'+str(chunk_len) + 's_deep_range_rate_first.npy', mean_est[:ind_partition])
+    np.save('npys/'+str(chunk_len) + 's_deep_range_rate_cpa.npy', mean_est[ind_partition:])
+
+    """ Plot the velocity estimates with GPS estimates"""
+
+    plt.scatter(gps_time[6:], gps_vel[6:],marker='x',color='red',s=9)
+    plt.legend([str(df) + ' Hz est.' for df in d_freqs[::-1] ] + ['Mean over frequency'] + ['GPS'])
+    plt.ylim([3, -3])
+    plt.xlabel('Time (mins)')
+    plt.ylabel('Range rate (m/s)')
+
+    """ Compute the residuals from the mean """
+    diffs = np.zeros((len(d_freqs), mean_est.size))
+
+    for i in range(len(d_freqs)):
+        v_est= ests[i]
+        diffs[i,:] = mean_est- v_est.thetas
+
+    errs = np.var(diffs, axis=0)
+    mean_inds = []
+    mean_err = np.mean(errs)
+    
+    """ Identify outliers and update the mean est """
+    """ Also update the errorbars """
+    outlier_inds = []
+    for i in range(len(errs)):
+        if errs[i] > 3*mean_err:
+            msmts = [x.thetas[i] for x in ests]
+            med = np.median(msmts)
+            diff = np.array([abs(x-med) for x in msmts])
+            bad_ind = np.argmax(diff)
+            outlier_inds.append([bad_ind, i])
+            okay_msmts = [msmts[i] for i in range(len(ests)) if i != bad_ind]
+            outlier_inds.append([bad_ind,i])
+            mean_est[i] = np.mean(okay_msmts)
+            new_err = np.var([mean_est[i] - x for x in okay_msmts])
+            errs[i] = new_err
+
+    
+    errs = np.var(diffs, axis=0)
+    plt.plot(v_est.tgrid/60, mean_est, color='black')
+    plt.errorbar(v_est.tgrid/60, mean_est, np.sqrt(errs),fmt='o',color='black',ecolor='gray',elinewidth=1,ms=3,capsize=2)
+
+
+    """ Look at residuals from the mean curve to see if they
+    look gaussian """
+    if plot_resids == True:
+        plt.figure()
+        ret= plt.hist(diffs.flatten(), 200, density=True)
+        vals, x = ret[0], ret[1]
+        means = np.mean(diffs, axis=1)
+        variances = np.var(diffs, axis=1)
+        var = np.var(diffs.flatten())
+        mean = np.mean(diffs.flatten())
+        vals = np.exp(-np.square(x-mean) / (2*var)) / np.sqrt(2*np.pi*var)
+        plt.plot(x, vals)
+        plt.xlabel('Residual')
+        plt.ylabel('Probability')
+    #for i in range(6):
+    #    plt.figure()
+    #    ret= plt.hist(diffs[i,:], 100, density=True)
+    #    vals, x = ret[0], ret[1]
+    #    vals = np.exp(-np.square(x-mean) / (2*var)) / np.sqrt(2*np.pi*var)
+    #    plt.plot(x, vals)
+    #    pass
+    
+    plt.figure()
+    plt.plot(v_est.tgrid[::12][6:]/60, mean_est[::12][6:], color='black')
+    plt.scatter(gps_time[6:][:-3], gps_vel[6:][:-3],marker='x',color='red',s=9)
+    print(gps_vel[6:][:-3].shape, mean_est[::12][6:].shape)
+    x = gps_vel[6:-3]
+    y = mean_est[::12][6:]
+    plt.figure()
+    plt.plot(y/x)
+        
+    with open('../audio/pickles/deep_ests_unbiased.pickle', 'wb') as f:
+        pickle.dump(ests,f)
+    return mean_est
+
+def form_shallow_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
+    """ Modification of proc_shallow
+    Goal is to look up the results of  
+    the least squares for each of the high
+    shallow frequencies (see below)
+    Then combine them into one average
+    velocity, throwing out outliers,
+    and saving the result on the server 
+    Input 
+    chunk_len - integer
+        the length of the chunks used in the 
+        least squares
+    pickle_root - string
+            root location of estimate outputs
+    Output 
+    saves a numpy array with the velocity estimates
+    """
+
+    """ First get the estimates """
+    s_freqs = [232, 280,335,385]
+    ests = []
+    for sf in s_freqs:
+            pickle_name =pickle_root + str(chunk_len) + '_' + str(sf) +'.pickle'
+            v_est= get_est(pickle_name)
+            for i in range(len(v_est.thetas)):
+                x = v_est.thetas[i]
+                if x == 0:
+                    x = np.zeros(v_est.thetas[0].shape)
+                    v_est.thetas[i] = x
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.thetas = v_est.thetas[:-1]
+            v_est.get_t_grid()
+            ests.append(v_est)
+
+    """ Compute the mean estimate """ 
+    ind = False
+    mean_est = np.zeros(ests[0].thetas.shape)
+    for i in range(len(ests)):
+        v_est=ests[i]
+        mean_est += v_est.thetas
+    mean_est /= len(s_freqs)
+
+    """ Compute the residuals from the mean and identify outliers """
+    diffs = np.zeros((len(s_freqs), mean_est.size))
+
+    for i in range(len(s_freqs)):
+        v_est= ests[i]
+        diffs[i,:] = mean_est- v_est.thetas
+
+    errs = np.var(diffs, axis=0)
+    mean_inds = []
+    mean_err = np.mean(errs)
+    
+    """ Identify outliers and update the mean est """
+    """ Also update the errorbars """
+    outlier_inds = []
+    for i in range(len(errs)):
+        if errs[i] > 3*mean_err:
+            msmts = [x.thetas[i] for x in ests]
+            med = np.median(msmts)
+            diff = np.array([abs(x-med) for x in msmts])
+            bad_ind = np.argmax(diff)
+            outlier_inds.append([bad_ind, i])
+            okay_msmts = [msmts[i] for i in range(len(ests)) if i != bad_ind]
+            outlier_inds.append([bad_ind,i])
+            mean_est[i] = np.mean(okay_msmts)
+            new_err = np.var([mean_est[i] - x for x in okay_msmts])
+            errs[i] = new_err
+
+    np.save(pickle_root+str(chunk_len) + 'sw_rr.npy', mean_est)
+    np.save(pickle_root+str(chunk_len) + 'sw_rr_errs.npy', errs)
+
+    return mean_est
+
+def load_shallow_unbiased(tscc=False):
+    if tscc==False:
+        with open('../audio/pickles/shallow_ests_unbiased.pickle', 'rb') as f:
+            ests= pickle.load(f)
+    else:
+        ests = []
+        for f in [232, 280,  335, 385]:
+            with open('../audio/pickles/5_' + str(f) + '.pickle', 'rb') as f:
+                est = pickle.load(f)
+                ests.append(est)
     return ests
 
 def shallow_ar():
@@ -373,96 +657,152 @@ def simplest_kalman(gps_var):
         sk_log.append(skk)
     return sk_log
 
-def assemble_shallow_ests():
-    """ I have 4 pickled estimates I want to combine into
-    1 nice object
+def assemble_ests(chunk_len, source_depth):   
+    """ I run my phase estimation on two sections of the data separately
+    This scripts merges them into one object """
     """
-    s_freqs = [232, 280,335,385]
-    ests = []
-    for sf in s_freqs:
-        """ Get 6.5 minute piece """
-        pickle_name = '../audio/pickles/chunk_10s_auto_shallow_'+str(sf)+'_freqs.pickle'
-        v_est= get_est(pickle_name)
-        t1 = v_est.thetas
-        s1 = v_est.sigmas
-        """ Get last estimate """
-        pickle_name = '../audio/pickles/chunk_10s_auto_shallow_'+str(sf)+'_freqs_last_msmt.pickle'
-        v_est= get_est(pickle_name)
-        t2 = v_est.thetas
-        s2 = v_est.sigmas
+    Input - 
+        chunk_len - int or float
+            the chunk size in the phase estimation thing    
+        source_depth - string
+            'shallow' or 'deep'
+    Output -
+        None
+        saves a pickled copy of the AlphaEst object
+        with the combined estimates
+    """
 
-        """ Get 40 minut """
-        pickle_name = '../audio/pickles/chunk_10s_auto_shallow_'+str(sf)+'_freqs_cpa.pickle'
-        v_est= get_est(pickle_name)
-        t3 = v_est.thetas
-        s3 = v_est.sigmas
+    if source_depth == 'shallow':
+        freqs = [232, 280,335,385]
+    if source_depth == 'deep':
+        freqs = [235, 283,338,388]
 
-        """ Get last msmt """
-        pickle_name = '../audio/pickles/chunk_10s_auto_shallow_'+str(sf)+'_freqs_cpa_last_msmt.pickle'
-        v_est= get_est(pickle_name)
-        t4 = v_est.thetas
-        s4 = v_est.sigmas
-    
-        all_thetas = t1 + t2 + t3 + t4
-        all_sigmas = s1 + s2 + s3 + s4
-        complete_est = AlphaEst(v_est.chunk_len, all_thetas, all_sigmas)
-        with open('../audio/pickles/10s_shallow_complete_' + str(sf) + '.pickle', 'wb') as f: 
-            pickle.dump(complete_est, f)
+    if chunk_len == 10:
+        """ I have 4 pickled estimates I want to combine into
+        1 nice object
+        """
+        ests = []
+        for f in freqs:
+            """ Get 6.5 minute piece """
+            pickle_name = '../audio/pickles/chunk_10s_auto_' + source_depth + '_'+str(f)+'_freqs.pickle'
+            v_est= get_est(pickle_name)
+            t1 = v_est.thetas
+            s1 = v_est.sigmas
+            """ Get last estimate """
+            pickle_name = '../audio/pickles/chunk_10s_auto_' + source_depth + '_'+str(f)+'_freqs_last_msmt.pickle'
+            v_est= get_est(pickle_name)
+            t2 = v_est.thetas
+            s2 = v_est.sigmas
 
+            """ Get 40 minut """
+            pickle_name = '../audio/pickles/chunk_10s_auto_' + source_depth + '_'+str(f)+'_freqs_cpa.pickle'
+            v_est= get_est(pickle_name)
+            t3 = v_est.thetas
+            s3 = v_est.sigmas
 
+            if source_depth == 'shallow':
+                """ Get last msmt """
+                pickle_name = '../audio/pickles/chunk_10s_auto_' + source_depth + '_'+str(f)+'_freqs_cpa_last_msmt.pickle'
+                v_est= get_est(pickle_name)
+                t4 = v_est.thetas
+                s4 = v_est.sigmas
+            
+                all_thetas = t1 + t2 + t3 + t4
+                all_sigmas = s1 + s2 + s3 + s4
+                complete_est = AlphaEst(v_est.chunk_len, all_thetas, all_sigmas)
+            else: 
+                all_thetas = t1 + t2 + t3 
+                all_sigmas = s1 + s2 + s3 
+                complete_est = AlphaEst(v_est.chunk_len, all_thetas, all_sigmas)
 
-#assemble_shallow_ests()
+            with open('../audio/pickles/10s_' + source_depth + '_complete_' + str(f) + '.pickle', 'wb') as f: 
+                pickle.dump(complete_est, f)
 
-proc_shallow()
+    if chunk_len == 5:
+        """ There are two pickle estimates to combine """
+        ests = []
+        for f in freqs:
+            """ Get 6.5 minute piece """
+            pickle_name = '../audio/pickles/chunk_5s_auto_' + source_depth + '_'+str(f)+'.pickle'
+            v_est= get_est(pickle_name)
+            t1 = v_est.thetas
+            s1 = v_est.sigmas
 
-sys.exit(0)
-shallow_ar()    
-    
-    
-gps_var = 1
-sk_log = simplest_kalman(.1)
-rdot_ests = [x[0] for x in sk_log]
-r_ests = [x[1] for x in sk_log]
+            """ Get 40 minut """
+            pickle_name = '../audio/pickles/chunk_5s_auto_' + source_depth + '_'+str(f)+'_cpa.pickle'
+            v_est= get_est(pickle_name)
+            t2 = v_est.thetas
+            s2 = v_est.sigmas
 
-rdot_msmts = load_shallow_unbiased()
-mean, msmt_var = get_mean_est(rdot_msmts)
-plt.plot(rdot_ests)
-plt.plot(mean)
-plt.show()
+            all_thetas = t1 + t2
+            all_sigmas = s1 + s2
+            complete_est = AlphaEst(v_est.chunk_len, all_thetas, all_sigmas)
+            with open('../audio/pickles/5s_' + source_depth + '_complete_' + str(f) + '.pickle', 'wb') as f: 
+                pickle.dump(complete_est, f)
 
-plt.plot(r_ests)
-plt.show()
-
-
-#proc_shallow()
-#plt.show()
-def proc_deep():
-    plt.figure()
-    plt.suptitle('Deep source')
-    #d_freqs = [201, 235, 283, 338]#, 388] 
-    d_freqs = [235, 283, 338, 388] 
-    ests = []
-    for df in d_freqs:
-        pickle_name = '../audio/pickles/chunk_10s_auto_deep_'+str(df)+'_freqs.pickle'
-        v_est= get_est(pickle_name)
-        v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
-        v_est.get_t_grid()
-        v_est.add_t0(6.5*60)
-        good_inds = [i for i in range(len(v_est.thetas)) if v_est.thetas[i] != 0]
-        good_thetas = np.array([v_est.thetas[i] for i in good_inds])
-        good_t = np.array([v_est.tgrid[i] for i in good_inds])
-        plt.plot(good_t/60, good_thetas)#, yerr=np.sqrt(sigma))
-        ests.append(v_est)
-
-    gps_range_km, lat, lon, gps_time = load_track()
-    gps_vel = get_velocity(gps_time, gps_range_km)
-
-    gps_vel = gps_vel[:41]
-    gps_time = gps_time[:41]
-    plt.plot(gps_time, gps_vel)
-    plt.legend([str(df) for df in d_freqs] + ['GPS'])
-    plt.ylim([-1.8, -3])
+def simple_comp_test1():
+    est = get_est('../audio/pickles/5_385.pickle')
+    est.get_t_grid()
+    est_comp = get_est('../audio/pickles/5s_shallow_complete_385.pickle')
+    t_grid_comp = est_comp.get_t_grid()
+    est_comp.add_t0(6.5*60)
+    est_comp.thetas = np.array(est_comp.thetas)
+    est_comp.thetas = est_comp.thetas.reshape(est_comp.thetas.size)
+    plt.plot(est.tgrid, est.thetas)
+    plt.plot(est_comp.tgrid, est_comp.thetas)
     plt.show()
 
 
-#proc_deep()
+def plot_script():
+    """ Script for playing around and looking at plots""" 
+    #mean_full = proc_shallow(2, tscc=True)
+    #np.save('npys/sw_2.npy', mean_full)
+    #mean_full = proc_shallow(5, tscc=True)
+    #np.save('npys/sw_5.npy', mean_full)
+    #mean = proc_shallow(5)
+    mean = proc_deep(5, tscc=True)
+    #mean = proc_deep(2, tscc=True)
+    #mean_full = proc_deep(5)
+    plt.show()
+
+    #x = np.load('npys/1024sw_rr.npy')
+    #plt.figure()
+    #plt.plot(x[:-6])
+
+
+    #plt.figure()
+    #fs = 1500/1024
+    #ind = int(45*60 * fs)
+    #first_chunk = x[5:ind]
+    #first_chunk = detrend(first_chunk)
+    #fx = np.fft.rfft(first_chunk)
+    #freqs = np.fft.rfftfreq(len(first_chunk), 1024/1500)
+    #plt.plot(freqs, np.square(abs(fx)))
+    
+    plt.show()
+
+if __name__ == '__main__':
+    plot_script()
+
+    #chunk_len = int(sys.argv[1])
+    #est = form_shallow_vel(chunk_len)
+    #plot_script()
+   # plt.figure()
+    #plt.plot(est)
+    #plt.savefig('/oasis/tscc/scratch/fakins/pic.png')
+    #plt.clf()
+    #gps_var = 1
+    #sk_log = simplest_kalman(.1)
+    #rdot_ests = [x[0] for x in sk_log]
+    #r_ests = [x[1] for x in sk_log]
+
+    #rdot_msmts = load_shallow_unbiased()
+    #mean, msmt_var = get_mean_est(rdot_msmts)
+    #plt.plot(rdot_ests)
+    #plt.plot(mean)
+    #plt.show()
+
+    #plt.plot(r_ests)
+    #plt.show()
+
+

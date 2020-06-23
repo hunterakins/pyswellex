@@ -1,11 +1,12 @@
 import os
+import sys
 import numpy as np
 from matplotlib import pyplot as plt
 from swellex.audio.indices.sensors import freqs, mins
 from scipy.signal import detrend
 import pickle
 import time
-from swellex.audio.brackets import Bracket, get_brackets, get_autobrackets,form_good_pest, form_good_alpha, get_pest, get_cpa_pest
+from swellex.audio.brackets import Bracket, get_brackets, get_autobrackets,form_good_pest, form_good_alpha, get_pest
 
 
 '''
@@ -219,6 +220,8 @@ def get_initial_est(b_list, num_f, df, poly_order, batch_size, start_ind=0):
         freq spacing
         whether to reverse the phase samples...
         in beta 
+    pests - list of np arrays of data
+        ?
 
     Output
     theta - numpy array (column)
@@ -537,7 +540,7 @@ def run_long_sls():
     with open('pickles/sls_poly_result.pickle', 'wb') as f:
         pickle.dump([theta, np.diag(Sigma), curr_ind, open_bracks, leftover_b_list],f)
 
-def lin_offset_alpha(brack, start_ind, chunk_size,recalc_var=False):
+def lin_offset_alpha(brack, start_ind, chunk_size, pest, recalc_var=False):
     """
     Take a bracket that contains data in the 
     interval start_ind to start_ind + chunk_size
@@ -560,14 +563,14 @@ def lin_offset_alpha(brack, start_ind, chunk_size,recalc_var=False):
     """ If the bracket straddles the start index
     you can just set alpha0 so that it intersects
     0 at start_ind """
-    _,y = brack.get_data()
+    _,y = brack.get_data(pest=pest)
     if brack.start <= start_ind:
         data_ind_start = start_ind - brack.start
         ds = brack.data[data_ind_start]
         d0 = brack.data[0]
         alpha0 = d0 - ds
         brack.add_alpha0(alpha0)
-        _, y = brack.get_data()
+        _, y = brack.get_data(pest=pest)
         if recalc_var == True:
             if brack.end < start_ind + chunk_size:
                 data_ind_end = -1
@@ -606,7 +609,7 @@ def lin_offset_alpha(brack, start_ind, chunk_size,recalc_var=False):
     projected_initial_value = alpha*(brack.start-start_ind)
     alpha0 = projected_initial_value
     brack.add_alpha0(alpha0)
-    _,y = brack.get_data()
+    _,y = brack.get_data(pest=pest)
     if recalc_var == True:
         if len(dats) > 1500:
             dats = detrend(dats)
@@ -652,7 +655,7 @@ def compute_chunk_estimate(chunk_len, pickle_name, freqs, recalc_var=True, recom
     sigma_chunks = []
 
     
-    for chunk in range(num_chunks-1, num_chunks):
+    for chunk in range(num_chunks):
         start_ind = chunk_size*chunk
         print('start ind', start_ind, start_ind/1500/60 + 6.5)
         end_ind = start_ind + chunk_size
@@ -692,7 +695,6 @@ def look_at_long_run():
     with open('pickles/sls_result.pickle', 'rb') as f:
         theta, Sigma, alpha_list, curr_ind, open_bracks, leftover_b_list = pickle.load(f)
 
-
 def look_at_chunk_both():
     with open('goddamn.txt', 'r') as f:
         lines = f.readlines()
@@ -715,14 +717,15 @@ def look_at_chunk_shallow():
 class AlphaEst:
     def __init__(self, chunk_len, theta_list, sigma_list):
         """
-        chunk_len - float
-            length of the least square chunk estimates in sec
+        chunk_len - int
+            nuber of samples in a chunk
         theta_list - list of numpy ndarrays
             the parameter estimates 
         sigma_list - list of numpy ndarrays 
             parameter covariance     
         """
         self.chunk_len = chunk_len
+        self.chunk_sec = chunk_len /1500
         self.thetas = theta_list
         self.sigmas = sigma_list
 
@@ -747,27 +750,227 @@ class AlphaEst:
             rgrid.append(rcurr)
         return rgrid
             
+def get_tscc_bracket(freq):
+    pickle_name = '/home/fakins/data/swellex/good_brackets_' +str(freq) + '.pickle'
+    with open(pickle_name, 'rb') as f:
+        brackets = pickle.load(f)
+    return brackets
+
+def compute_chunk_tscc(chunk_len, pickle_name, freq, start_min, end_min):
+    """
+    Perform an estimate alpha dot for a series of chunks of length chunk_len(seconds)
+    Using the data on the tscc supercomputer    
+
+    chunk_len - float
+        length of each chunk in seconds
+    pickle_name - string
+        name of resulting saved result (modified to 
+        reflect the frequency )
+    freq - int 
+        frequency at which to perform the estimation
+    """
+    """ Fetch the bracket list """
+    b_list = get_tscc_bracket(freq)
+    start_ind, end_ind = start_min*60*1500, end_min*60*1500
+    start_ind, end_ind = int(start_ind), int(end_ind)
+    pests = []
+    for i in range(64):
+        pest = get_pest('/home/fakins/data/swellex/' + str(freq) + '_pest.npy', i+1)
+        pest = pest[start_ind:end_ind]
+        pests.append(pest) 
+
+    poly_order = 1
+    num_f = 0 # no fourier fitting
+    df = 1 # dummy val
+    
+    """ get length of pest records """
+    total_len = pest.size
+
+    """ Get number of chunks. It throws out some data at the end 
+    if chunks doesn't evenly divide the interval"""
+    chunk_size = int(1500*chunk_len)
+    num_chunks = int(total_len // chunk_size)
+    theta_chunks = [] # estimate list
+    sigma_chunks = [] # error covariance list
+
+    for chunk in range(num_chunks):
+        start_ind = chunk_size*chunk
+        end_ind = start_ind + chunk_size
+
+        """ These brackets will be used """
+        opening_bracks = [x for x in b_list if (((x.start < start_ind) and (x.end > start_ind)) or ((x.start >= start_ind) and (x.start < end_ind)))]
+        print('end ind', end_ind)
+
+        if len(opening_bracks) == 0:
+            print('no open brackets')
+            obj = theta_chunks[-1]
+            theta0 = np.zeros(obj.shape)
+            theta0 = np.zeros(obj.shape)
+        else:
+            print('len opening bracks')
+            print(len(opening_bracks))
+            for x in opening_bracks:
+                sens_ind = x.sensor
+                pest = pests[sens_ind-1]
+                print(type(pest))
+                lin_offset_alpha(x, start_ind, chunk_size, pest, recalc_var=True)
             
-        
-        
-        
-        
+            theta0, cov, opening_bracks = get_initial_est(b_list, num_f, df, poly_order, chunk_size, start_ind=start_ind)
+        """ Add estimate and cov. to list """
+        theta_chunks.append(theta0)
+        sigma_chunks.append(cov)
+
+        """ Save progress """
+        alpha_est = AlphaEst(chunk_len, theta_chunks, sigma_chunks)
+        with open(pickle_name, 'wb') as f:
+            pickle.dump(alpha_est, f)
+
+        """ close out brackets that won't appear again to conserve mem"""
+        b_list = sort_by_end(b_list)
+        while b_list[0].end <= start_ind:
+            x = b_list.pop(0)
+            x.dom = 0
+            x.data = 0    
+    return theta_chunks, sigma_chunks
+
+def mega_H(chunk_len):
+    """ Make a big model matrix for the 64 element array """
+    """ 
+    chunk_len - int
+        number of samples in a chunk
+    """
+    chunk_sec = chunk_len /1500 
+    H = np.zeros((64*chunk_len,1))
+    dt = 1/1500
+    t = np.linspace(0, chunk_sec-dt, chunk_len)
+    for i in range(64):
+        H[i*chunk_len:(i+1)*chunk_len,0] = t
+    return H
+
+def get_mega_H_inv(good_rows, rel_data, H, num_samps):
+    """ 
+    Compute H pseudo inverse
+    Since H psuedo inverse is
+    inv(H.T@C_inv@H)C_inv@H.T, C_inv[i,i]
+    will be zero for ''bad_rows'', and C_inv[i,i]
+    will be 1/var of the ith row of rel_data if 
+    it's a good row 
+    Then, C_inv@H willsimply be the nulled or scaled rows of
+    H """
+    CiH = np.zeros(H.shape)
+    CiH[:,:] = H
+    for i in range(64):
+        if i in good_rows:
+            row = rel_data[i,:]
+            row = detrend(row)
+            var = np.var(row)
+            CiH[i*num_samps:(i+1)*num_samps,0] /= var
+        else:
+            CiH[i*num_samps:(i+1)*num_samps, 0] /= 10000
+    inv = np.linalg.inv(H.T@CiH)
+    H_pseudo = inv @ CiH.T
+    """ null out bad rows """
+#    for i in range(64):
+#        if i not in good_rows:
+#            H_pseudo[0,i*num_samps:(i+1)*num_samps] *= 0
+    return H_pseudo, inv
+
+def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
+    """
+    Perform an estimate of v for a series of chunks of length chunk_len(seconds)
+    Alternative approach that should be easier to code
+    Simply load up the full array of phase estimates    
+    (all sensors and all times)
+    Then use the good_brackets file to
+    select which sensors are good for each 5 second chunk
+    Those that are bad, assign a large covariance
+    to the measurement (10000 or whatever)
+    Then I only compute H once, and upate the 
+    pseudoinverse using the cov matrix for this bracket
+    down side is that only 5 second chunk lenght is good    
+    Using the data on the tscc supercomputer    
+
+    chunk_len - int
+        number of samples in a chunk
+    pickle_name - string
+        name of resulting saved result (modified to 
+        reflect the frequency )
+    freq - int 
+        frequency at which to perform the estimation
+    """
+
+    """ Fetch the bracket list """
+    b_list = get_tscc_bracket(freq)
+    first_ind, last_ind = start_min*60*1500, end_min*60*1500
+    first_ind, last_ind = int(first_ind), int(last_ind)
+    pests = np.load('/home/fakins/data/swellex/'+str(freq) + '_pest.npy')
+    #pests = pests[:,first_ind:last_ind]
+    total_len = last_ind-first_ind
+    H = mega_H(chunk_len)
+
+    poly_order = 1
+    num_f = 0 # no fourier fitting
+    df = 1 # dummy val
+    
+    """ Get number of chunks. It throws out some data at the end 
+    if chunks doesn't evenly divide the interval"""
+    chunk_sec = chunk_len/1500
+    num_chunks = int(total_len // chunk_len)
+    print('num_chunks', num_chunks)
+    theta_chunks = [] # estimate list
+    sigma_chunks = [] # error covariance list
+    dt = 1/1500
+    t = np.linspace(0, dt*(chunk_len -1), chunk_len)
+    prin:('total samples to proc' ,total_len)
+    for chunk in range(num_chunks):
+        start_ind = chunk_len*chunk + first_ind
+        end_ind = start_ind + chunk_len
+
+        """ Get relevant data"""
+        rel_data = pests[:, start_ind:end_ind]
+        """ Set first value to 0"""
+        rel_data -= (rel_data[:,0]).reshape(64,1)
+        rel_data = 1500*(rel_data / 2/np.pi/freq - t)
+
+        """ Get the good rows """
+        opening_bracks = [x for x in b_list if (((x.start < start_ind) and (x.end > start_ind)) or ((x.start >= start_ind) and (x.start < end_ind)))]
+        good_rows = list(set([x.sensor for x in opening_bracks]))
+        if len(good_rows) == 0:
+            alpha = 0
+        else:
+            pseudo, cov = get_mega_H_inv(good_rows, rel_data,H, chunk_len)
+            rel_data = rel_data.reshape(rel_data.size, 1)
+            alpha = pseudo@rel_data
+        theta_chunks.append(alpha)
+#        sigma_chunks.append(cov)
+        #    print('no open brackets')
+        #    obj = theta_chunks[-1]
+        #    theta0 = np.zeros(obj.shape)
+        #    theta0 = np.zeros(obj.shape)
+        #else:
+        #    print('len opening bracks')
+        #    print(len(opening_bracks))
+            
+
+        print(alpha)
+#        """ Save progress """
+        alpha_est = AlphaEst(chunk_len, theta_chunks, sigma_chunks)
+        with open(pickle_name, 'wb') as f:
+            pickle.dump(alpha_est, f)
+
+        """ close out brackets that won't appear again to conserve mem"""
+    return
+
+    
+    
 
 if __name__ == '__main__':
     start = time.time()
-    _ = get_pest(232,1)
-    dm = 1/1500/60
-    chunk_len = 10
-    #look_at_chunk_both()
-    shallow_freqs = [232,280,335,385]
-    #shallow_freqs = [280]
-    deep_freqs = [201, 235, 283, 338, 388]
-    for f in shallow_freqs:
-        pickle_name = 'pickles/chunk_10s_auto_shallow_'+str(f)+'_freqs_last_msmt.pickle'
-        theta, sigma = compute_chunk_estimate(chunk_len, pickle_name, [f], recalc_var=True, recomp_bracks=False,cpa=False)
 
-    #for f in deep_freqs:
-    #    pickle_name = 'pickles/chunk_10s_auto_deep_'+str(f)+'_freqs.pickle'
-    #    theta, sigma = compute_chunk_estimate(chunk_len, pickle_name, [f], recalc_var=True, recomp_bracks=False)
-    end = time.time()
-    print('total time', end-start)
+    chunk_len = int(sys.argv[1])
+    freq = int(sys.argv[2])
+    start_min, end_min = float(sys.argv[3]), float(sys.argv[4])
+    pickle_name = '/oasis/tscc/scratch/fakins/' + str(chunk_len) + '_' + str(freq) + '.pickle'
+    print('Computing the velocity estimates using ' + str(chunk_len/1500) + ' second chunks at frequency', freq)
+    print('for data from min', start_min, 'to data ', end_min)
+    alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min)
