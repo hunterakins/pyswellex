@@ -774,7 +774,7 @@ def compute_chunk_tscc(chunk_len, pickle_name, freq, start_min, end_min):
     start_ind, end_ind = start_min*60*1500, end_min*60*1500
     start_ind, end_ind = int(start_ind), int(end_ind)
     pests = []
-    for i in range(64):
+    for i in range(63):
         pest = get_pest('/home/fakins/data/swellex/' + str(freq) + '_pest.npy', i+1)
         pest = pest[start_ind:end_ind]
         pests.append(pest) 
@@ -834,16 +834,16 @@ def compute_chunk_tscc(chunk_len, pickle_name, freq, start_min, end_min):
     return theta_chunks, sigma_chunks
 
 def mega_H(chunk_len):
-    """ Make a big model matrix for the 64 element array """
+    """ Make a big model matrix for the 63 element array """
     """ 
     chunk_len - int
         number of samples in a chunk
     """
     chunk_sec = chunk_len /1500 
-    H = np.zeros((64*chunk_len,1))
+    H = np.zeros((63*chunk_len,1))
     dt = 1/1500
     t = np.linspace(0, chunk_sec-dt, chunk_len)
-    for i in range(64):
+    for i in range(63):
         H[i*chunk_len:(i+1)*chunk_len,0] = t
     return H
 
@@ -859,7 +859,7 @@ def get_mega_H_inv(good_rows, rel_data, H, num_samps):
     H """
     CiH = np.zeros(H.shape)
     CiH[:,:] = H
-    for i in range(64):
+    for i in range(63):
         if i in good_rows:
             row = rel_data[i,:]
             row = detrend(row)
@@ -870,7 +870,7 @@ def get_mega_H_inv(good_rows, rel_data, H, num_samps):
     inv = np.linalg.inv(H.T@CiH)
     H_pseudo = inv @ CiH.T
     """ null out bad rows """
-#    for i in range(64):
+#    for i in range(63):
 #        if i not in good_rows:
 #            H_pseudo[0,i*num_samps:(i+1)*num_samps] *= 0
     return H_pseudo, inv
@@ -929,7 +929,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
         """ Get relevant data"""
         rel_data = pests[:, start_ind:end_ind]
         """ Set first value to 0"""
-        rel_data -= (rel_data[:,0]).reshape(64,1)
+        rel_data -= (rel_data[:,0]).reshape(63,1)
         rel_data = 1500*(rel_data / 2/np.pi/freq - t)
 
         """ Get the good rows """

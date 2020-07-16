@@ -1,13 +1,14 @@
 import numpy as np
 import os
+import sys
 from matplotlib import pyplot as plt
 import pickle
 from scipy.signal import detrend, convolve, firwin, hilbert
-import matplotlib._color_data as mcd
+#import matplotlib._color_data as mcd
 #from lse import get_brackets
-from matplotlib.widgets import PolygonSelector
-from matplotlib.path import Path
-from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest, get_cpa_pest
+#from matplotlib.widgets import PolygonSelector
+#from matplotlib.path import Path
+from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest
 
 '''
 Description:
@@ -785,7 +786,6 @@ def make_5s_bracks(pest):
         bracks.append([start_ind, end_ind])
     return bracks
     
-
 def auto_select_inds(sensor,cpa=False):
     """ 
     Develop an automatic detector for the good sections of phase
@@ -857,11 +857,106 @@ def auto_write_indices(fname, cpa=False):
         newfile.write(']')
     return
 
+def auto_gen_brackets(freqs, chunk_size):
+    """Generate the brackets for 
+    the full set of sensors , frequencies 
+    For each frequency, load up the phase estimates
+    then loop through each sensor and check...it might take a while
+    input 
+    freqs - list of ints
+        source frequencies for which to identify the 
+        good brackets
+    chunk_size - int
+        size of data chunks to consider (number of samples)
+    """
+    total_samples = 60*75*1500
+    num_brackets = int(total_samples // chunk_size)-1
+    for f_ind in range(len(freqs)):
+        good_bracks = []
+        f=  freqs[f_ind]
+        print('Processing frequency ', f)
+        data_loc = '/oasis/tscc/scratch/fakins/data/swellex/' + str(f) + '_pest.npy'
+        pests = np.load(data_loc)
+        for j in range(num_brackets):
+            start = j*chunk_size
+            end = (j+1)*chunk_size
+            vals = pests[:,start:end]
+            detrend(vals, overwrite_data=True)
+            for i in range(63):
+                sensor_ind = i+1
+                row = vals[i,:]
+                detrend(row, overwrite_data=True)
+                var = np.var(row)
+                if var < .5:
+                    bracket = Bracket([start, end], sensor_ind, f, f_ind,data_loc)
+                    good_bracks.append(bracket)
+        print('Pickling brackets for frequency ', f)
+        with open('/oasis/tscc/scratch/fakins/data/swellex/good_brackets_' + str(f) +'.pickle', 'wb') as ff:
+            pickle.dump(good_bracks,ff)
+
+def check_bracks():
+    with open('/home/fakins/data/swellex/good_brackets_127.pickle', 'rb') as ff:
+        bracks = pickle.load(ff)
+        fs = set([x.freq for x in bracks])
+        fs = list(fs)
+        print(fs)
+        s1 = [x for x in bracks if x.sensor == 1]
+        plt.figure()
+        pest = get_pest('/home/fakins/data/swellex/127_pest.npy', 1)
+        ind = 0
+        for b in s1:
+            if ind == 0:
+                print(b.data_loc)
+                ind += 1
+            dom, alpha = b.get_data(pest=pest)
+            plt.plot(dom,alpha, color='r')
+        plt.savefig('127_check.png')
+        
+def check_pest():
+    x = np.load('/home/fakins/data/s5.npy')
+    x0 = x[0,:]
+    plt.figure()
+    plt.plot(x0)
+    plt.savefig('x0.png')
+    plt.clf()
+
+def check_pest1():
+    x = np.load('/home/fakins/data/swellex/127_pest.npy')
+    x = detrend(x)
+    x0 = x[0,:]
+    plt.figure()
+    plt.plot(x0)
+    plt.savefig('127_pest.png')
+    plt.clf()
+
+def collect_brackets(freqs):
+    """ I wrote a separate pickle for each
+    frequency band...now collect them all into one """
+    all_bracks=[]
+    for f in freqs:
+        with open('/home/fakins/data/swellex/good_brackets_' +str(f) +'.pickle', 'rb') as ff:
+            bracks = pickle.load(ff)
+        for x in bracks:
+            all_bracks.append(x)
+    with open('/home/fakins/data/swellex/good_brackets.pickle', 'wb') as ff:
+        pickle.dump(ff, all_bracks)
+    return
+            
+
 if __name__ == '__main__':
     freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
-#    freqs= [148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
+    freqs= [127, 130, 148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
             
-    auto_write_indices(cpa=True)
+    freq = sys.argv[1]
+    chunk_len = int(sys.argv[2])
+    freq = int(freq)
+    freqs = [freq]
+    print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len)
+    #auto_write_indices(cpa=True)
+    auto_gen_brackets(freqs, chunk_len)
+#    check_pest()
+    #check_pest1()
+#    check_bracks()
 #    dats = get_pest(49,1)
 #    print(dats.size)
 #    select_inds(17)
