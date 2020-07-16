@@ -50,7 +50,6 @@ def enter_missing_gps_val(range_km, lat, lon, time):
 
     time = np.insert(time,13, [13])
     return range_km, lat, lon, time
-    
 
 def get_velocity(times, range_km):
     dr = range_km[1:] - range_km[:-1]
@@ -184,6 +183,8 @@ def proc_shallow(chunk_len, tscc=False, plot_resids=False):
 
     gps_range_km, lat, lon, gps_time = load_track()
     gps_vel = get_velocity(gps_time, gps_range_km)
+    plt.plot(gps_range_km)
+    plt.show()
         
     plt.figure()
     if tscc == False:
@@ -281,6 +282,43 @@ def proc_shallow(chunk_len, tscc=False, plot_resids=False):
     with open('../audio/pickles/shallow_ests_unbiased.pickle', 'wb') as f:
         pickle.dump(ests,f)
     return mean_est
+
+def good_time(t):
+    """
+    """
+    flag = True
+    if t >= 15 and t <= 99:
+        flag = False
+    if t >= 1010 and t <= 1141:
+        flag = False
+    if t >= 1247 and t <= 1339.4:
+        flag = False
+    if t >= 2243 and t <= 2375:
+        flag = False
+    if t >= 3320.3 and t <= 3400:
+        flag = False
+    if t >= 3486.95 and t <= 3559.73:
+        flag = False
+    return flag
+
+def get_good_ests(chunk_len, v_ests):
+    """
+    The deep source doesn't project during seconds
+    15:99
+    1010:1141
+    1247:1339.4
+    Input
+    chunk_len - int
+        number of samples per chunk 
+    """
+    chunk_time = chunk_len/1500
+    v_ests = v_ests[:-4]
+    num_ests = v_ests.size
+    t = np.linspace(0, chunk_time*(num_ests-1), num_ests)
+    good_inds = [i for i in range(num_ests) if good_time(t[i])]
+    good_times = np.array([t[x] for x in range(len(t)) if x in good_inds])
+    good_v_ests = np.array([v_ests[x] for x in range(len(v_ests)) if x in good_inds])
+    return good_inds, good_times, good_v_ests
 
 def proc_deep(chunk_len, tscc=False, plot_resids=False):
     """ A copy of proc_shallow for the deep source more or less
@@ -505,6 +543,80 @@ def form_shallow_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
 
     np.save(pickle_root+str(chunk_len) + 'sw_rr.npy', mean_est)
     np.save(pickle_root+str(chunk_len) + 'sw_rr_errs.npy', errs)
+
+    return mean_est
+
+def form_deep_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
+    """ Modification of proc_deep
+    Goal is to look up the results of  
+    the least squares for each of the high
+    deep frequencies (see below)
+    Then combine them into one average
+    velocity, throwing out outliers,
+    and saving the result on the server 
+    Input 
+    chunk_len - integer
+        the length of the chunks used in the 
+        least squares
+    pickle_root - string
+            root location of estimate outputs
+    Output 
+    saves a numpy array with the velocity estimates
+    """
+
+    """ First get the estimates """
+    d_freqs = [235, 283,338,388]
+    ests = []
+    for df in d_freqs:
+            pickle_name =pickle_root + str(chunk_len) + '_' + str(df) +'.pickle'
+            v_est= get_est(pickle_name)
+            for i in range(len(v_est.thetas)):
+                x = v_est.thetas[i]
+                if x == 0:
+                    x = np.zeros(v_est.thetas[0].shape)
+                    v_est.thetas[i] = x
+            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+            v_est.thetas = v_est.thetas[:-1]
+            v_est.get_t_grid()
+            ests.append(v_est)
+
+    """ Compute the mean estimate """ 
+    ind = False
+    mean_est = np.zeros(ests[0].thetas.shape)
+    for i in range(len(ests)):
+        v_est=ests[i]
+        mean_est += v_est.thetas
+    mean_est /= len(d_freqs)
+
+    """ Compute the residuals from the mean and identify outliers """
+    diffs = np.zeros((len(d_freqs), mean_est.size))
+
+    for i in range(len(d_freqs)):
+        v_est= ests[i]
+        diffs[i,:] = mean_est- v_est.thetas
+
+    errs = np.var(diffs, axis=0)
+    mean_inds = []
+    mean_err = np.mean(errs)
+    
+    """ Identify outliers and update the mean est """
+    """ Also update the errorbars """
+    outlier_inds = []
+    for i in range(len(errs)):
+        if errs[i] > 3*mean_err:
+            msmts = [x.thetas[i] for x in ests]
+            med = np.median(msmts)
+            diff = np.array([abs(x-med) for x in msmts])
+            bad_ind = np.argmax(diff)
+            outlier_inds.append([bad_ind, i])
+            okay_msmts = [msmts[i] for i in range(len(ests)) if i != bad_ind]
+            outlier_inds.append([bad_ind,i])
+            mean_est[i] = np.mean(okay_msmts)
+            new_err = np.var([mean_est[i] - x for x in okay_msmts])
+            errs[i] = new_err
+
+    np.save(pickle_root+str(chunk_len) + 'dw_rr.npy', mean_est)
+    np.save(pickle_root+str(chunk_len) + 'dw_rr_errs.npy', errs)
 
     return mean_est
 
@@ -752,10 +864,10 @@ def simple_comp_test1():
     plt.plot(est_comp.tgrid, est_comp.thetas)
     plt.show()
 
-
 def plot_script():
     """ Script for playing around and looking at plots""" 
-    #mean_full = proc_shallow(2, tscc=True)
+    mean_full = proc_shallow(2, tscc=True)
+    plt.show()
     #np.save('npys/sw_2.npy', mean_full)
     #mean_full = proc_shallow(5, tscc=True)
     #np.save('npys/sw_5.npy', mean_full)
@@ -784,8 +896,17 @@ def plot_script():
 if __name__ == '__main__':
     plot_script()
 
-    #chunk_len = int(sys.argv[1])
+#    chunk_len = int(sys.argv[1])
     #est = form_shallow_vel(chunk_len)
+    x = np.load('1024sw_rr.npy')
+    num_chunks = x.size
+    dt = 1024/1500
+    t = np.linspace(0, (num_chunks-1)*dt, num_chunks)
+    y = np.load('1024dw_rr.npy')
+    #deep_t, y = get_good_ests(1024,y)
+    plt.plot(t,x)
+    plt.plot(deep_t,y)
+    plt.show()
     #plot_script()
    # plt.figure()
     #plt.plot(est)
