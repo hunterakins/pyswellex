@@ -59,7 +59,9 @@ def sim_swellex(freq, source_depth, r, sensor_ind=0):
     env_builder  =factory.create('swellex')
     env = env_builder()
     zs = source_depth
-    zr = np.array([94.125, 99.755, 105.38, 111.00, 116.62, 122.25, 127.88, 139.12, 144.74, 150.38, 155.99, 161.62, 167.26, 172.88, 178.49, 184.12, 189.76, 195.38, 200.99, 206.62, 212.25])
+#    zr = np.array([94.125, 99.755, 105.38, 111.00, 116.62, 122.25, 127.88, 139.12, 144.74, 150.38, 155.99, 161.62, 167.26, 172.88, 178.49, 184.12, 189.76, 195.38, 200.99, 206.62, 212.25])
+    zr = np.linspace(94.125, 212.25,64)
+    zr = np.delete(zr, 21)
     num_rcvrs = zr.size
     dz =  5
     zmax = 216.5
@@ -82,6 +84,41 @@ def sim_swellex(freq, source_depth, r, sensor_ind=0):
         field += term
 #    field *= 1/np.sqrt(r)
     return field, modes
+
+def sim_iso(freq, source_depth, r, sensor_ind=0):
+    """
+    Do an iso simulation at freq , source_depth, at ranges in 
+    r (a 1d numpy array) at rcvr depth zr[sensor_ind]
+    with water column depth = 216
+    """
+
+    """ Get the modes """
+    D = 216
+    om = 2*np.pi*freq
+    cw = 1500
+    k = om/cw
+    i = 1
+    kz = i*np.pi/D
+    krs = []
+    kzs = []
+    while kz < k:
+        kzs.append(kz)
+        kr = np.sqrt(k*k - kz*kz)
+        krs.append(kr)
+        i += 1
+        kz = i*np.pi/D
+    print(krs)
+    
+#    zr = np.array([94.125, 99.755, 105.38, 111.00, 116.62, 122.25, 127.88, 139.12, 144.74, 150.38, 155.99, 161.62, 167.26, 172.88, 178.49, 184.12, 189.76, 195.38, 200.99, 206.62, 212.25])
+    zr = np.linspace(94.125, 212.25,64)
+    zr = np.delete(zr, 21)
+
+    phi = np.zeros((zr.size, len(krs)))
+    for i in range(len(krs)):
+        phi[:,i] = np.sin(kzs[i]*zr)
+    krs = np.array(krs)
+    np.save('npy_files/' + str(freq) + '_shapes.npy', phi)
+    np.save('npy_files/' + str(freq) + '_krs.npy',krs)
 
 def make_kr_grid(sim_kr, dkr=.0001):
     """
@@ -202,6 +239,7 @@ def get_kr_ests(freqs, source_depth, v_bias=[1]):
         branch1, ranges, v_ests = get_rel_range(freq, chunk_len, source_string)
         field, modes = sim_swellex(freq, source_depth, branch1)
         krs = modes.k
+        print('krs', krs)
         kr_grid = make_kr_grid(krs)
 
         p = incoh_pgram(freq, ranges, v_ests, chunk_len, kr_grid, v_bias)
@@ -256,7 +294,41 @@ def comp_naive_demod(freq, chunk_len,sensor_ind):
         vals[i] = val
     return vals
 
-    
+def make_mode_plot(freq, sd): 
+    field, modes = sim_swellex(freq, sd, np.linspace(1, 5, 100))
+    s_strength = modes.phi[0,:]
+    modes.remove_source_pos(sd)
+    np.save('npy_files/' + str(freq) + '_shapes.npy', modes.phi)
+    np.save('npy_files/' + str(freq) + '_krs.npy', modes.k)
+    print('mean k', np.mean(modes.k))
+    print('expected gammas',  modes.k / np.mean(modes.k))
+    summ = 0
+    num_modes = modes.phi.shape[1]
+    total_stren = np.sum(s_strength)
+    for i in range(num_modes):
+        summ += modes.k[i] *s_strength[i] / total_stren
+    print('weighted mean k', summ)
+    print('expected gammas',  modes.k / summ)
+    zr = np.linspace(94.125, 212.25,64)
+    zr = np.delete(zr, 21)
+    print(num_modes)
+    fig, axs = plt.subplots(4,4,sharey='row',sharex='col')
+    plt.suptitle(str(freq) + ' Modes')
+    for i in range(num_modes):
+        curr_ax = axs[i//4, i%4]
+        curr_ax.plot(modes.phi[:,i], zr)
+        plt.gca().invert_yaxis()
+        if i%4 == 0:
+            curr_ax.set_ylabel('Depth (m)')
+            curr_ax.invert_yaxis()
+    return fig
+
+freqs = [49, 64, 79, 94]
+freqs = [49]
+for freq in freqs:
+    fig = make_mode_plot(freq, 9)
+    plt.savefig(str(freq) + '_modes.png')
+    plt.show()
      
 freqs = [109, 127, 145, 163, 198, 232, 280, 335, 385]
 source_depth = 9
@@ -264,6 +336,7 @@ source_depth = 9
 
 freqs = [49, 64, 79, 94, 112, 130, 148, 166, 201, 235, 283, 338, 388]
 source_depth = 54
+get_kr_ests([64], source_depth)
 freqs = [127]
 freqs = [335]
 freqs = [49]
