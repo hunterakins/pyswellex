@@ -14,26 +14,21 @@ Date:
 Author: Hunter Akins
 '''
 
-def get_pest(f0, s_ind):
+def get_name(f0, s_ind):
     """
-    Fetch the pickled phase estimate corresponding to 
+    get the filename of loca...Fetch the pickled phase estimate corresponding to 
     frequency f0 and sensor s_ind
-    s_ind - int >= 1
-    """
+    s_ind - int >= 1 """
     fname = 'pickles/kay_s' + str(s_ind) + 'pest_' + str(int(f0)) + '.pickle'
-    with open(fname, 'rb') as f:
-        p_est = pickle.load(f)
-    return p_est
+    return fname
 
-def get_cpa_pest(f0, s_ind):
+def get_pest(data_loc, s_ind):
     """
-    Fetch the pickled phase estimate corresponding to 
-    frequency f0 and sensor s_ind
-    s_ind - int >= 1
     """
-    fname = '/media/hunter/ExtHard/pickles/kay_s' + str(s_ind) + 'cpapest_' + str(int(f0)) + '.pickle'
-    with open(fname, 'rb') as f:
-        p_est = pickle.load(f)
+#    fname = 'pickles/kay_s' + str(s_ind) + 'pest_' + str(int(f0)) + '.pickle'
+    print('getting pest t ', data_loc)
+    p_est = np.load(data_loc)
+    p_est = p_est[s_ind-1, :]
     return p_est
 
 def get_alt_pest(f0, s_ind):
@@ -46,7 +41,7 @@ def get_alt_pest(f0, s_ind):
         p_est = pickle.load(f)
     return p_est
 
-def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
+def form_good_pest(f, brackets, data_loc, sensor_ind=1,detrend_flag=False):
     """
     Take in the intervals specified in the list of 
     brackets and return the portions of the time domain
@@ -66,7 +61,7 @@ def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
         each element is a np array
         of phase ests
     """
-    pest =get_pest(f, sensor_ind)
+    pest =get_pest(data_loc,sensor_ind)
     if detrend_flag == True:
         pest = detrend(pest)
     dom = np.linspace(0, pest.size, pest.size)
@@ -86,24 +81,19 @@ def form_good_pest(f, brackets,sensor_ind=1,detrend_flag=False):
         dom_segs.append(dom_seg)
     return dom_segs, pest_segs
 
-def form_good_alpha(f, brackets, sensor_ind=1, c=1500,cpa=False):
+def form_good_alpha(f, brackets, data_loc, sensor_ind=1, c=1500, pest=None):
     """
     alpha = c*((phi - phi(0))/(2 pi f0) - t)
     Use the list of good brackets to extract the relevant portions 
     """
-    if cpa == False:
-        pest =get_pest(f, sensor_ind)
-        pest -= pest[0] 
-        dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
-        dm = 1/1500/60
-        sec_dom = np.linspace(0, (40-6.5-dm)*60, pest.size)
-    else:
-        pest =get_cpa_pest(f, sensor_ind)
-        pest -= pest[0] 
-        dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
-        ds = 1/1500
-        sec_dom = np.linspace(0, (35*60-ds), pest.size)
-        
+    if type(pest) == type(None):
+        pest =get_pest(data_loc, sensor_ind)
+    pest -= pest[0] 
+    dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
+    dm = 1/1500/60
+    sec_dom = np.linspace(0, (75-dm)*60, pest.size)
+    dom = np.linspace(0, pest.size-1, pest.size, dtype=int)
+    ds = 1/1500
     inds = []
     d_segs = []
     alpha_segs = []
@@ -156,47 +146,31 @@ def  cpa_domain(bracket):
 
 class Bracket:
     """ Bracket of good data """
-    def __init__(self, bracket, sensor_ind, freq, f_ind, alpha_var=None,cpa=False):
+    def __init__(self, bracket, sensor_ind, freq, f_ind, data_loc, alpha_var=None):
         """ 
         Input 
-            bracket - list, bracket[0] is start in mins, bracket[1] is end
+            bracket - list, bracket[0] is start index, bracket[1] is end index
             in mins
             sensor_ind - int >= 1
             freq - int 
                 frequency band
             f_ind - int
                 index of the frequency in the ''canonical list''
+            data_loc - str
+                filepath of pickled data
             alpha_var - None type or float  
                 the variance of the rescaled phase rate for the bracket
-            cpa - bool
-                whether or not i'm processing the [6.5,40) minute or the [40, 75) minute sections
-            
         """
-        """ I had to correct for an error I made in assigning 
-        the minute values to the brackets....
-        I used a domain from 6.5 to 40, but I should've used
-        a domain from 6.5 to 40 - (1/1500 / 60) which
-        is the sampling rate in mins
-        I correc the mins, then use them to get the right index
-
-        """
-        if cpa == False:
-            start_min, end_min, start, end = correct_bad_domain(bracket)
-        else: # if cpa is true, then i give it in inds
-            start_min, end_min, start,end = cpa_domain(bracket)
-        """ Minutes corresponding to first and last sample """
-        self.start_min, self.end_min = start_min, end_min
-        """ index of start and end of bracket (in the domain (0, pest.size, pest.size)"""
-        self.start, self.end = start, end
+        self.start, self.end = bracket[0], bracket[1]
         self.bracket = [self.start, self.end]
         self.sensor = sensor_ind
         self.freq = freq
         self.f_ind = f_ind
+        self.data_loc = data_loc 
         self.alpha_var = alpha_var
         self.alpha0=None
         self.dom = None
         self.data = None
-        self.cpa=cpa
 
     def add_alpha_var(self):
         if type(self.data) == type(None):
@@ -213,8 +187,13 @@ class Bracket:
         """
         self.alpha0 = alpha0
 
-    def get_data(self,c=1500):
-        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.sensor, c, self.cpa)
+    def get_data(self,c=1500, pest=None):
+        """
+        Get data corresponding to the bracket
+        Optionally provide the numpy array
+        of phase estimates relevant for this 
+        brackets frequency and sensor index """
+        dom_segs, alpha_segs = form_good_alpha(self.freq, [self.bracket], self.data_loc, self.sensor, c=c,pest=pest)
         if type(self.alpha0) != type(None):
             x0= alpha_segs[0][0]
             diff = self.alpha0 - x0
@@ -381,21 +360,21 @@ if __name__ == '__main__':
     #cleanup_autobrackets(brackets, use_pickle=True)
     #sys.exit(0)
     
-    from indices.cpasensors_auto import mins
-    brackets = get_cpa_brackets(mins, freqs, True)
-    sys.exit(0)
-    
-    #mins = get_cpa_auto_inds_in_mins() 
-    brackets = get_autobrackets(mins, freqs,cpa=True)
-    #brackets  =get_brackets(mins, freqs, False)
-    #clean_bracks = cleanup_autobrackets(brackets, False)
-    bracks = [x for x in brackets if x.freq in freqs]
-    for j in range(21):
-        sens = j+1
-        s_bracks = [x for x in bracks if x.sensor == sens]
-        dats = detrend(get_cpa_pest(freqs[0], sens))
-        for x in s_bracks[-30:]:
-            dom,vals = x.get_data()
-            tmp = detrend(vals)
-            plt.plot(dom,vals,color='r')
-        plt.show()
+    #from indices.cpasensors_auto import mins
+    #brackets = get_cpa_brackets(mins, freqs, True)
+    #sys.exit(0)
+    #
+    ##mins = get_cpa_auto_inds_in_mins() 
+    #brackets = get_autobrackets(mins, freqs,cpa=True)
+    ##brackets  =get_brackets(mins, freqs, False)
+    ##clean_bracks = cleanup_autobrackets(brackets, False)
+    #bracks = [x for x in brackets if x.freq in freqs]
+    #for j in range(21):
+    #    sens = j+1
+    #    s_bracks = [x for x in bracks if x.sensor == sens]
+    #    dats = detrend(get_cpa_pest(freqs[0], sens))
+    #    for x in s_bracks[-30:]:
+    #        dom,vals = x.get_data()
+    #        tmp = detrend(vals)
+    #        plt.plot(dom,vals,color='r')
+    #    plt.show()
