@@ -1,0 +1,8 @@
+*/*.npy
+*/*.png
+*/*.pdf
+*/*.pickle
+*/*.prt
+audio/indices/*
+audio/pickles/*
+audio/npy_files
