@@ -55,10 +55,10 @@ def kay_preproc_vec(s_n, fc, order, df,save=False, froot=None):
     """
     filt = firwin(order, [fc-df, fc+df], fs=1, pass_zero=False, window='hann')
     s_n = convolve1d(s_n, filt, mode='constant')
+    u_n = hilbert(s_n)
     if save == True:
         print('Saving the band pass filtered time series for ', str(1500*fc))
-        np.save(froot + str(int(1500*fc)) + '_ts.npy', s_n)
-    u_n = hilbert(s_n)
+        np.save(froot + str(int(1500*fc)) + '_' + str(order) + '_ts.npy', s_n)
     return u_n
 
 def diff_seq(u_n):
@@ -147,7 +147,7 @@ def get_vec_p_est(x, fn, dfn, order, save=False, froot=None):
         fn - float
             center freq
         dfn - float
-            bandwidht
+            half the bandwidht
         order - int
             filter order
     Output 
@@ -190,7 +190,7 @@ def test_vec_p_est():
     plt.plot(detrend(pest1), color='r')
     plt.show()
 
-def data_run(freqs, sensor_inds, df):
+def data_run(freqs, sensor_inds, df, order=1024):
     """
     Estimate phase of received data 
     Input 
@@ -217,10 +217,6 @@ def data_run(freqs, sensor_inds, df):
             """ Convert to dimensionless """
             fn = f0*dt 
             dfn = df*dt
-            """ Choose order of FIR filter
-            You want it short enough to resolve the wavenumbers
-            """
-            order =  1024 
             """ Estimate the phase """
             p_est = get_p_est(sensor, fn, dfn, order)
             fname = '/media/hunter/ExtHard/pickles/kay_s' + str(sensor_ind) + 'cpapest_' + str(int(f0)) + '.pickle'
@@ -271,7 +267,7 @@ def sim_est():
     plt.show()
     return p_est
 
-def tscc_pest(freqs, save=False, froot=None):
+def tscc_pest(freqs, df,order=1024, save=False, froot=None):
     """
     For each frequency in freqs, 
     take in the swellex numpy array 
@@ -282,6 +278,7 @@ def tscc_pest(freqs, save=False, froot=None):
         freqs - list of floats/ints    
             frequencies at which to perform the 
             phase estimation
+        df - bandwidth of td filter
     Output 
         None
         saves an array for each frequency in freqs
@@ -290,12 +287,11 @@ def tscc_pest(freqs, save=False, froot=None):
         if save is True, the bandpass filtered
         data is saved at froot """ 
     x = np.load('/oasis/tscc/scratch/fakins/data/swellex/s5_good.npy')
+    print('order', order)
     dt = 1/1500
-    df = .5
     for f in freqs:
         fn = f*dt 
         dfn = df*dt
-        order =  1024 
         """ Estimate the phase """
         pest = get_vec_p_est(x, fn, dfn, order, save, froot)
         print('Saving phase estimates for ', f, ' Hz')
@@ -338,10 +334,12 @@ if __name__ == '__main__':
     #freqs = [49, 64, 79, 94, 109, 112, 127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
     #freqs = [127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
     #data_run(freqs, sensor_inds, df)
-    freq = sys.argv[1]
-    freqs = [int(freq)]
-    print('running tscc pest at ', freqs)
-    tscc_pest(freqs, save=True, froot='/oasis/tscc/scratch/fakins/')
+    freq = float(sys.argv[1])
+    df = float(sys.argv[2])
+    order = int(sys.argv[3])
+    freqs = [freq]
+    print('running tscc pest at ', freqs, ' with df ', df, ' and order ', order)
+    tscc_pest(freqs, df, order=order, save=True, froot='/oasis/tscc/scratch/fakins/')
 #    tscc_coh_sum(freqs)
 
 
