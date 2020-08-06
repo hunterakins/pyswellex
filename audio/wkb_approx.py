@@ -69,7 +69,7 @@ def wkb(freq, kr, ssp, mode_shape, zr):
     To get S0, integrate Q 
     """
     Q_func = interp1d(zr, np.sqrt(-Q))
-    int_Q = np.array([quad(Q_func, zr[0], zr[i])[0] for i in range(len(Q))])
+    int_Q = np.array([0] + [quad(Q_func, zr[0], zr[i])[0] for i in range(1,len(Q))])
     S0 = 1/eps * int_Q
     
 
@@ -127,54 +127,67 @@ def invert_q(zr, mode_shape):
         
     return
 
-
-def invert_kr_and_k(kz_list, zr_list, om_list):
+def make_param_model(om, om_m):
     """
-    Given estimates of kz for a number of freq_bands
-    can I get kbar and kr
-    Input
-    kz_list - list of lists
-        each list is a set of kz estimates derived from mode shapes
-    zr_list - list of np arrays
-        the zr corresponding to the mode shapes
-    om_list -list of omega
+    Given knowledge of source frequency om = 2pifreq_s
+    and estimates of om_m (the doppler shifted modes)
+    form matrix that relates source velocity and mean ssp
+    to mode shape wavenumbers kz
     """
-    num_rows = sum([len(x) for x in kz_list])
-    for i in range(len(kz_list)):
-        kz = np.array(kz_list[i])
-        kz = kz.reshape(kz.size,1)
-        kz = np.square(kz)
-    H = np.zeros((num_rows, num_cols))
-    for i in range(num_rows):
-        H[i, 0] = 1
-        H[i, i+1] = -1
-    plt.imshow(H)
-    plt.show()
-    H_inv = np.linalg.inv(H.T@H)@H.T
-    est = H_inv@kz
-    return est
+    om_m = np.array(om_m).reshape(len(om_m),1)
+    model_mat = np.zeros((len(om_m), 2))
+    om_col = np.array([om]*len(om_m))
+    om_col = om_col.reshape(len(om_col),1)
+    model_mat[:,0] = np.square(om_col[:,0])
+    model_mat[:,1] = -np.square((om_m - om_col)[:,0])
+    return model_mat
 
 def test_inv():
-    freq = 49
+    freq = 127
+    v = -2.4
     phi, krs = load_mode_model(freq)
     zr_inter = np.linspace(94.125, 212.25,64)
     zr = np.delete(zr_inter, 21)
     ssp = get_ssp()
+
+    c_bar = np.mean(ssp)
     krs = krs.real
     om = 2*np.pi*freq
+    """ Map the krs to the time domain """
+    om_m = om - krs*v
+
+    """ Get model """
+    model_mat = make_param_model(om, om_m)
+
+    """ Run forward model for funzies """
+    params = np.array([1/c_bar/c_bar, 1/v/v]).reshape(2,1)
+    kz_pred = model_mat@params
+
     delta_c = ssp - np.mean(ssp)
     me = ModeEstimates(freq, [phi[:,i] for i in range(len(krs))])
     me.get_kz_list() 
     kzs = me.kzs
-    print(kzs)
-    est = invert_kr_and_k(kzs, me.zr)
-    kbar_est = est[0]
-    c_est = om*om/kbar_est
-    print(est)
-    print(c_est)
+
+
+    """ Now invert and see how we do..."""
+    inv = np.linalg.inv(model_mat.T@model_mat)@model_mat.T
+    p = inv@np.square(kzs)
+    v_hat = 1/np.sqrt(p[1])
+    c_hat = 1/np.sqrt(p[0])
+    if np.sign(np.median(om_m-om)) > 0:
+        v_hat = -v_hat
+    print(c_hat, c_bar)
+    print(v_hat, v)
+   
+    kr_hats = (om_m-om)/-v_hat 
+    mode_num = np.linspace(0, len(kr_hats)-1, len(kr_hats))
+    plt.figure()
+    plt.scatter(mode_num, krs)
+    plt.scatter(mode_num, kr_hats)
+    plt.show()
 
 def test():
-    freq = 127
+    freq = 49
     phi, krs = load_mode_model(freq)
     zr_inter = np.linspace(94.125, 212.25,64)
     zr= np.delete(zr_inter, 21)
@@ -204,10 +217,10 @@ def test():
     fig3, ax3 = plt.subplots(1,1)
     errs = []
     for i in range(len(krs)):
-        #wkb_mode = wkb(freq, krs[i], ssp, phi[:,i], zr)
+        wkb_mode = wkb(freq, krs[i], ssp, phi[:,i], zr)
         #err = np.sqrt(np.var(phi[:,i]-wkb_mode))
-        #ax3.plot(zr, wkb_mode)
-        #ax3.plot(zr, phi[:,i])
+        ax3.plot(zr, wkb_mode)
+        ax3.plot(zr, phi[:,i])
         #errs.append(err)
         ax1.scatter(krs[i], me.kzs[i])
         ax2.plot(me.zr, detrend(me.phis[i]))
@@ -216,8 +229,11 @@ def test():
     squares = np.square(me.kzs)
     ax1.set_xlabel('kr')
     ax1.set_ylabel('kz')
-    ax2.set_xlabel('kr')
-    ax2.set_ylabel('Phase nonlinearity')
+    fig1.suptitle('Estimated kz versus kr')
+    fig2.suptitle('Deviation of phase from linear trend')
+    fig3.suptitle('Comparing WKB derived mode from KRAKEN mode for '+ str(freq)+ ' Hz')
+    ax2.set_xlabel('Depth')
+    ax2.set_ylabel('Phase nonlinearity (radians)')
     kbars = np.sqrt(squares+ np.square(krs) )
     #plt.figure()
     #plt.xlabel('Standard deviation')
@@ -236,5 +252,5 @@ def test():
 
 #test()
 if __name__ == '__main__':
-    #test_inv()
-    test()
+    test_inv()
+    #test()
