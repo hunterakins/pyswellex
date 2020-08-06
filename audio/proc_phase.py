@@ -857,7 +857,7 @@ def auto_write_indices(fname, cpa=False):
         newfile.write(']')
     return
 
-def auto_gen_brackets(freqs, chunk_size):
+def auto_gen_brackets(freqs, chunk_size, var_lim=.5):
     """Generate the brackets for 
     the full set of sensors , frequencies 
     For each frequency, load up the phase estimates
@@ -887,7 +887,7 @@ def auto_gen_brackets(freqs, chunk_size):
                 row = vals[i,:]
                 detrend(row, overwrite_data=True)
                 var = np.var(row)
-                if var < .5:
+                if var < var_lim:
                     bracket = Bracket([start, end], sensor_ind, f, f_ind,data_loc)
                     good_bracks.append(bracket)
         print('Pickling brackets for frequency ', f)
@@ -949,11 +949,12 @@ if __name__ == '__main__':
             
     freq = sys.argv[1]
     chunk_len = int(sys.argv[2])
+    var = float(sys.argv[3])
     freq = int(freq)
     freqs = [freq]
-    print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len)
+    print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len, ' using a variance limit of ', var)
     #auto_write_indices(cpa=True)
-    auto_gen_brackets(freqs, chunk_len)
+    auto_gen_brackets(freqs, chunk_len, var)
 #    check_pest()
     #check_pest1()
 #    check_bracks()
