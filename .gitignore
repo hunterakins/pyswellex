@@ -5,4 +5,5 @@
 */*.prt
 audio/indices/*
 audio/pickles/*
-audio/npy_files
+audio/npy_files/
+audio/pics/
