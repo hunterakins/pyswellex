@@ -2,7 +2,6 @@ import os
 import sys
 import numpy as np
 from matplotlib import pyplot as plt
-from swellex.audio.indices.sensors import freqs, mins
 from scipy.signal import detrend
 import pickle
 import time
@@ -903,7 +902,8 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
     b_list = get_tscc_bracket(freq)
     first_ind, last_ind = start_min*60*1500, end_min*60*1500
     first_ind, last_ind = int(first_ind), int(last_ind)
-    pests = np.load('/home/fakins/data/swellex/'+str(freq) + '_pest.npy')
+    #pests = np.load('/home/fakins/data/swellex/'+str(freq) + '_pest.npy')
+    pests = np.load('/oasis/tscc/scratch/fakins/data/swellex/'+str(freq) + '_pest.npy')
     #pests = pests[:,first_ind:last_ind]
     total_len = last_ind-first_ind
     H = mega_H(chunk_len)
@@ -962,15 +962,15 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
     return
 
     
-    
-
 if __name__ == '__main__':
     start = time.time()
 
     chunk_len = int(sys.argv[1])
     freq = int(sys.argv[2])
     start_min, end_min = float(sys.argv[3]), float(sys.argv[4])
-    pickle_name = '/oasis/tscc/scratch/fakins/' + str(chunk_len) + '_' + str(freq) + '.pickle'
+    df = float(sys.argv[5])
+    var = float(sys.argv[6])
+    pickle_name = '/oasis/tscc/scratch/fakins/' + str(chunk_len) + '_' + str(freq) + '_' + str(df) + '_' + str(var) + '.pickle'
     print('Computing the velocity estimates using ' + str(chunk_len/1500) + ' second chunks at frequency', freq)
     print('for data from min', start_min, 'to data ', end_min)
     alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min)
