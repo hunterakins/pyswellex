@@ -1,12 +1,16 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from swellex.ship.ship import get_good_ests, good_time
+from swellex.audio.autoregressive import load_fest
+from swellex.audio.ts_comp import get_fname, get_bw
 from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks, hilbert
 from scipy.interpolate import interp1d
+import pickle
 import multiprocessing as mp
 import os
 import sys
 import json
+import time
 
 '''
 Description:
@@ -133,7 +137,7 @@ def get_Theta(df, theta0=0):
     computed by integrating the deviation df (Hz)
     Input 
     df - np array
-        deviation from mean frequency f - mean_f 
+        deviation from mean frequency [f(t) - mean_f ]
     theta0 - float (int is fine too) 
         initial phase offset to start at 
         doesn't actually matter if you're doing incoh"""
@@ -150,7 +154,7 @@ def get_F(gamma, Theta):
     gamma - float
     Theta - np array
     """
-    return np.exp(complex(0,1)*gamma*Theta)
+    return np.exp(-complex(0,1)*gamma*Theta)
 
 def f_search(f_grid, x, start_min=0, end_min=40):
     """
@@ -171,6 +175,7 @@ def f_search(f_grid, x, start_min=0, end_min=40):
     """
 
     """ Convert to omega for convenience"""
+    now = time.time()
     omegs = 2*np.pi*f_grid
     """ get relevant time grid """
     t = np.arange(start_min*60, end_min*60, 1/1500)
@@ -181,25 +186,53 @@ def f_search(f_grid, x, start_min=0, end_min=40):
     for omeg in omegs:
         mat[i, :] = np.exp(-complex(0,1)*omeg*t)
         i += 1
+    print('array population time', time.time()-now)
+    now = time.time()
     vals = mat@x.T
+    print('actual dft time', time.time()-now)
     return np.array(vals)
 
-def gamma_iter(gamma, data, Theta, f_grid,chunk_len, freq,prefix='',start_min=0, end_min=40):
-    fname = '/oasis/tscc/scratch/fakins/' + str(freq) + '/' + str(gamma)[:6] + '_' + prefix + str(chunk_len) + '.npy'
-    if not os.path.isfile(fname):
-        print('Computing FTs for gamma = ', gamma)
-        #x = np.load('/oasis/tscc/scratch/fakins/' + str(freq) + '_ts.npy')
-        #x = x[:,ind1:ind2]
-        F = get_F(gamma, Theta)
-        x = data*F
-        vals = f_search(f_grid, x, start_min, end_min)
-        np.save(fname, vals)
-    else:
-        print('Already been computed for gamma', gamma, '. Returning')
-    return
+def get_f_mat(f_grid, start_min, end_min):
+    now = time.time()
+    omegs = 2*np.pi*f_grid
+    """ get relevant time grid """
+    t = np.arange(start_min*60, end_min*60, 1/1500)
+    mat = np.zeros((len(omegs), t.size), dtype=np.complex128)
+    i = 0
+    for omeg in omegs:
+        mat[i, :] = np.exp(-complex(0,1)*omeg*t)
+        i += 1
+    print('array population time', time.time()-now)
+    return mat
 
+def gamma_iter(gamma, data, Theta,  mat):
+    """
+    For value of gamma, remove phase noise and
+    estimate fourier transform for values in f_grid
+    Input 
+    gamma - float
+        read the Walker pape...
+    data - np ndarray dtype float64
+        rows are sensors, columns are snapshots in time
+    Theta - np array (1d)
+        estimated phase noise ~present~ in the signal
+    mat - np matrix 
+        grid of frequencies to compute dft for
+    Output 
+    vals - np ndarray
+        64 by f_grid.size, dtype = np.complex128
+    """
+    now = time.time()
+    F = get_F(gamma, Theta) # this is the phase noise removal factor
+    x = data*F
+    vals = mat@x.T
+    print('Mat mul time', time.time() - now)
+    now = time.time()
+    vals = vals.T
+    print('Transpose time', time.time()-now)
+    return vals
 
-def save_demod(freq, gamma, deep=False,chunk_len=1024, start_min=0, end_min=40,prefix=''):
+def save_demod(freq, gamma, deep=False,chunk_len=1024, start_min=0, end_min=40,suffix=''):
     """ Fetch data """
     if deep==True:
         v =np.load('/oasis/tscc/scratch/fakins/' + str(chunk_len) + 'dw_rr.npy')
@@ -232,11 +265,11 @@ def save_demod(freq, gamma, deep=False,chunk_len=1024, start_min=0, end_min=40,p
     f_max = mean_f + 3*Delta_f/4
     df = .00005
     f_grid = np.arange(f_min, f_max, df) 
-    np.save('/oasis/tscc/scratch/fakins/' + str(freq) + '/' + prefix + 'f_grid' + '.npy', f_grid)
-    gamma_iter(gamma, x, Theta,f_grid, chunk_len, freq, prefix=prefix, start_min=start_min, end_min=end_min)
+    np.save('/oasis/tscc/scratch/fakins/' + str(freq) + '/' + suffix + 'f_grid' + '.npy', f_grid)
+    gamma_iter(gamma, x, Theta,f_grid)
     return
         
-def mode_filter(freq, deep=False,chunk_len=1024, start_min=0, end_min=40,prefix=''):
+def mode_filter(freq, deep=False,chunk_len=1024, start_min=0, end_min=40,suffix=''):
     """ Fetch data """
     if deep==True:
         v =np.load('/oasis/tscc/scratch/fakins/' + str(chunk_len) + 'dw_rr.npy')
@@ -271,8 +304,8 @@ def mode_filter(freq, deep=False,chunk_len=1024, start_min=0, end_min=40,prefix=
     f_max = mean_f + 3*Delta_f/4
     df = .00005
     f_grid = np.arange(f_min, f_max, df) 
-    np.save('/oasis/tscc/scratch/fakins/' + str(freq) + '/' + prefix + 'f_grid' + '.npy', f_grid)
-    gamma_iter(0, x, Theta,f_grid, chunk_len, freq, prefix=prefix, start_min=start_min, end_min=end_min)
+    np.save('/oasis/tscc/scratch/fakins/' + str(freq) + '/' + suffix + 'f_grid' + '.npy', f_grid)
+    gamma_iter(0, x, Theta,f_grid, chunk_len, freq, suffix=suffix, start_min=start_min, end_min=end_min)
     return
 
 def doppler_sim():
@@ -315,7 +348,6 @@ def doppler_sim():
     modal_sum /= np.sqrt(r)
     modal_sum *= np.exp(complex(0,1)*omeg_s*time)
     np.save('npy_files/127_doppler_sim.npy', modal_sum)
-    
 
 def local_analysis():
     """ just a little sim """
@@ -396,6 +428,188 @@ def local_analysis():
     #data1 = f*modal_sum
     #np.save('npy_files/127_1.0_20_25.npy', data)
 
+def get_relevant_fhat(fhat, err, start_min, end_min, delta_n):
+    """ Extract the best estimates of fhat
+        Input 
+        fhat - np array
+            m by m array of frequency estimates
+        err  - np array 
+            m by n array of squared error for that corr. 
+            f hat
+        start_min - float
+            between 0 and 74
+        end_min - float
+            between 0 and 74
+        delta_n - int
+            number of samples between
+            adjacent fhat estimates
+            Should eventually package this into an
+            object with fhat and err but this is simple enough
+
+        Output 
+        fhat - fhat, restricted to start_min to end_min
+            and 1 dimensional
+    """
+    best_inds = np.argmin(err, axis=0)
+    i = np.linspace(0, best_inds.size-1, best_inds.size, dtype=int)
+    fhat = fhat[best_inds,i]
+    """ Restrict to domain of interest """
+    ind1, ind2 = int(start_min*60*1500/delta_n), int(end_min*60*1500/delta_n)+1
+    fhat = fhat[ind1:ind2]
+    return fhat
+
+def interp_fhat(fhat, start_min, end_min, delta_n):
+    """
+    Interpolate fhat onto the fs=1500 time grid 
+    fhat is on a 0.5s grid by default, and generally on
+    a grid that is delta_n/1500 seconds apart
+    Output
+    f_vals - interpolated fhat onto the fs=1500 grid
+    """
+    fhat_tgrid = np.arange(start_min*60, end_min*60 + delta_n/1500, delta_n/1500)
+    f_func = interp1d(fhat_tgrid, fhat)
+    time_domain = np.arange(start_min*60, end_min*60, 1/1500)
+    f_vals = f_func(time_domain)
+    return f_vals
+
+def rescale_f_vals(f_vals_curr, f_vals):
+    ratio = np.mean(f_vals_curr)/np.mean(f_vals)
+    f_vals *= ratio
+    return f_vals
+
+def get_relevant_data(freq, start_min, end_min):
+    x = np.load(get_fname(freq))
+    ind1, ind2 = int(start_min*60*1500), int(end_min*60*1500)
+    x = x[:,ind1:ind2]
+    print('len of ts (mins)', x.shape[1] / 1500/60)
+    print('start and end min', start_min, end_min)
+    return x 
+
+def get_f_grid(freq, mean_f, df):
+    """
+    Input
+    freq - int
+        source frequency (used ot compute expected bandwidth
+    mean_f - float
+        mean doppler shifted received signal
+    df - float
+        the fundamental frequency
+    """
+        
+    """ Setup frequency search grid"""
+    B = get_bw(freq) # bandwidth to search ove/gamm
+    """ Why B/4, not B/2? you ask?  My B calculation was very conservative, so B/2 tends to give 
+    a much wider range of frequencies than actually have signal. B/4 is still plenty broad """
+    f_min = mean_f - B/4
+    f_max = mean_f + B/4
+    f_grid = np.arange(f_min, f_max, df) 
+    return f_grid
+
+def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, suffix='nb', folder_root='/oasis/tscc/scratch/fakins/'):
+    """
+    Using ESPRIT freq estimation with narrower filters
+    to try and look at spectrum
+    freq - int
+        source freq
+    gammas - list of floats
+        gamma vals to search over
+    ref_freq - int
+        source freq to use f ests for to remove doppler
+    lim_list - list of lists of floats
+        each list element gives the start and end min of data chunk to look at
+        (default looks at one chunk from 15 min to 40 min)
+    N - int
+        length of data used in the instant. frequ. estimation
+    delta_n int
+        spacing of chunks used in inst. freq. estimation
+    suffix - string
+        something to append to the output files for identification
+    folder_root - string
+        place to save output files
+    """
+    print('Reference freq', ref_freq)
+
+    for chunk_id, lim in enumerate(lim_list):
+        chunk_id = str(chunk_id)
+        start_min = lim[0]
+        end_min = lim[1]
+
+        """ Load, select, and interpolate the f ests for freq """
+        fhat, err, amp = load_fest(freq,N=N, delta_n=delta_n, tscc=True)
+        fhat = get_relevant_fhat(fhat, err, start_min, end_min, delta_n)
+        f_vals_curr = interp_fhat(fhat, start_min, end_min, delta_n)
+
+        """ Repeat for the reference freq """
+        ref_fhat, ref_err, ref_amp = load_fest(ref_freq,N=N, delta_n=delta_n, tscc=True)
+        ref_fhat = get_relevant_fhat(ref_fhat, ref_err, start_min, end_min, delta_n)
+        f_vals = interp_fhat(ref_fhat, start_min, end_min, delta_n)
+
+        """ Now scale the reference freq to the freq of interest """
+        f_vals = rescale_f_vals(f_vals_curr, f_vals)
+
+        """ Load data and restrict to start_min, end_min """
+        x = get_relevant_data(freq, start_min, end_min)
+
+        """ Now estimate the phase noise due to accelerations """
+        mean_f = np.mean(f_vals)
+        dev_f = f_vals - mean_f 
+        Theta = get_Theta(dev_f)
+
+        """ Setup frequency search grid"""
+        T = (end_min -start_min) * 60
+        df = 1/T/5
+        f_grid = get_f_grid(freq, mean_f,df)
+
+        np.save(folder_root  + 'f_grid' + '.npy', f_grid)
+
+        """ Gamma iter will remove the phase noise and estimate the PSD at the values supplied in f_grid"""
+        fmat = get_f_mat(f_grid, start_min, end_min) 
+        for gamma in gammas:
+            vals =  gamma_iter(gamma, x, Theta, fmat)
+            now = time.time()
+            output = DemodDat(freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n)
+            output.save(chunk_id, suffix, folder_root=folder_root)
+            print('save time', time.time()-now)
+    return
+
+def make_fname(folder_root, gamma, chunk_id, suffix=''):
+    fname = folder_root + str(gamma)[:6] + '_' + chunk_id + suffix +'.pickle'
+    return fname
+    
+class DemodDat:
+    """ Class to hold the results of demodulating the raw ts"""
+    def __init__(self, freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n):
+        self.freq = freq # freq band under consideration
+        self.ref_freq = ref_freq # freq band used to estimate the phase noise
+        self.gamma = gamma # scaling param 
+        self.mean_f = mean_f # mean doppler shifted freq over range of interest
+        self.df = df
+        self.vals = vals # complex spectrum values
+        self.start_min = start_min # minute marker of data chunk under consideration
+        self.end_min = end_min # end minute marker
+        self.N = N # length of data used in the frequency estimation
+        self.delta_n = delta_n # spacing of data used in freq. est.
+
+    def get_fgrid(self):
+        """ Construct the fgrid  for vals 
+        It's nice to store this procedurally snce i'm copying back and forth
+        between comps and it's redundant
+        """
+        fgrid = get_f_grid(self.freq, self.mean_f,self.df)
+        return fgrid
+    
+    def save(self, chunk_id, suffix, folder_root='/oasis/tscc/scratch/fakins/', overwrite=True):
+        fname = make_fname(folder_root, self.gamma, chunk_id, suffix)
+        if overwrite == False:
+            if os.path.isfile(fname):
+                print('Already been computed for gamma', gamma, '. Overwrite is set to False, so returning without computing.')
+        else:
+            with open(fname, 'wb') as f:
+                pickle.dump(self, f)
+
+    
+
+
 if __name__ == '__main__':
 
     #doppler_sim()
@@ -429,5 +643,5 @@ if __name__ == '__main__':
         deep = True
     track_chunks = [[0, 15], [10, 25], [20,35],[30, 45], [40,55]]
     for i, track_chunk in enumerate(track_chunks):
-        save_demod(freq, gamma, deep=deep, chunk_len=chunk_len,start_min=track_chunk[0], end_min=track_chunk[1], prefix='chunk_'+str(i))
+        save_demod(freq, gamma, deep=deep, chunk_len=chunk_len,start_min=track_chunk[0], end_min=track_chunk[1], suffix='chunk_'+str(i))
 
