@@ -1,7 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from swellex.ship.ship import get_good_ests, good_time
-from swellex.audio.autoregressive import load_fest
+from swellex.audio.autoregressive import load_fest, esprit
 from swellex.audio.ts_comp import get_fname, get_bw
 from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks, hilbert
 from scipy.interpolate import interp1d
@@ -192,11 +192,14 @@ def f_search(f_grid, x, start_min=0, end_min=40):
     print('actual dft time', time.time()-now)
     return np.array(vals)
 
-def get_f_mat(f_grid, start_min, end_min):
+def get_f_mat(f_grid, start_min, end_min, deep=False):
     now = time.time()
     omegs = 2*np.pi*f_grid
     """ get relevant time grid """
     t = np.arange(start_min*60, end_min*60, 1/1500)
+    if deep == True:
+        good_inds = [i for i in range(len(t)) if good_time(t[i])]
+        t = t[good_inds]
     mat = np.zeros((len(omegs), t.size), dtype=np.complex128)
     i = 0
     for omeg in omegs:
@@ -220,7 +223,7 @@ def gamma_iter(gamma, data, Theta,  mat):
         grid of frequencies to compute dft for
     Output 
     vals - np ndarray
-        64 by f_grid.size, dtype = np.complex128
+        63 by f_grid.size, dtype = np.complex128
     """
     now = time.time()
     F = get_F(gamma, Theta) # this is the phase noise removal factor
@@ -505,7 +508,16 @@ def get_f_grid(freq, mean_f, df):
     f_grid = np.arange(f_min, f_max, df) 
     return f_grid
 
-def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, suffix='nb', folder_root='/oasis/tscc/scratch/fakins/'):
+def window_x(x):
+    """
+    Apply a hanning window to x
+    """
+    N = x.shape[1]
+    window = np.hamming(N)
+    x = x*N
+    return x
+
+def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, suffix='nb', folder_root='/oasis/tscc/scratch/fakins/', num_modes=6, deep=False):
     """
     Using ESPRIT freq estimation with narrower filters
     to try and look at spectrum
@@ -549,11 +561,17 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
 
         """ Load data and restrict to start_min, end_min """
         x = get_relevant_data(freq, start_min, end_min)
+        x = window_x(x)
+        
 
         """ Now estimate the phase noise due to accelerations """
         mean_f = np.mean(f_vals)
         dev_f = f_vals - mean_f 
         Theta = get_Theta(dev_f)
+        fig = plt.figure()
+        plt.plot(Theta)
+        plt.savefig('Theta.png')
+        plt.close(fig)
 
         """ Setup frequency search grid"""
         T = (end_min -start_min) * 60
@@ -563,13 +581,38 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
         np.save(folder_root  + 'f_grid' + '.npy', f_grid)
 
         """ Gamma iter will remove the phase noise and estimate the PSD at the values supplied in f_grid"""
-        fmat = get_f_mat(f_grid, start_min, end_min) 
+        fmat = get_f_mat(f_grid, start_min, end_min,deep=deep) 
+
+        """ Zero out bad section of data """
+        if deep == True:
+            t = np.arange(start_min*60, end_min*60, 1/1500)
+            good_inds = np.array([i for i in range(len(t)) if good_time(t[i])])
+            t = t[good_inds]
+            x = x[:,good_inds]
+            Theta = Theta[good_inds]
+            fig = plt.figure()
+            plt.plot(t)
+            plt.savefig('t_grid.png')
+            plt.close(fig)
+            fig = plt.figure()
+            plt.plot(dev_f[good_inds])
+            plt.savefig('dev_f.png')
+            plt.close(fig)
+            
+            
         for gamma in gammas:
-            vals =  gamma_iter(gamma, x, Theta, fmat)
-            now = time.time()
-            output = DemodDat(freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n)
+            F = get_F(gamma, Theta) # this is the phase noise removal factor
+            data = x*F
+            vals = fmat@data.T
+            vals = vals.T
+            peaks = np.zeros((63, num_modes))
+            for i in range(63):
+                peak = esprit(data[i,:], num_modes, 80)
+                print(abs(peak))
+                peaks[i,:] = abs(peak)
+            #vals =  gamma_iter(gamma, x, Theta, fmat)
+            output = DemodDat(freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n, peaks)
             output.save(chunk_id, suffix, folder_root=folder_root)
-            print('save time', time.time()-now)
     return
 
 def make_fname(folder_root, gamma, chunk_id, suffix=''):
@@ -578,7 +621,7 @@ def make_fname(folder_root, gamma, chunk_id, suffix=''):
     
 class DemodDat:
     """ Class to hold the results of demodulating the raw ts"""
-    def __init__(self, freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n):
+    def __init__(self, freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n,esprit_peaks):
         self.freq = freq # freq band under consideration
         self.ref_freq = ref_freq # freq band used to estimate the phase noise
         self.gamma = gamma # scaling param 
@@ -589,6 +632,7 @@ class DemodDat:
         self.end_min = end_min # end minute marker
         self.N = N # length of data used in the frequency estimation
         self.delta_n = delta_n # spacing of data used in freq. est.
+        self.esprit_peaks = esprit_peaks
 
     def get_fgrid(self):
         """ Construct the fgrid  for vals 

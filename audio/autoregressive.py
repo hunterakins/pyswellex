@@ -368,7 +368,7 @@ def test_esprit(freq, p, model_order, T):
 
     plt.suptitle('T='+str(T)+', f=' + str(freq) + ' Esprit')
 
-def run_esprit(freq, p, model_order, N, delta_n):
+def run_esprit(freq, p, model_order, N, delta_n, alt=False):
     """
     Run ESPRIT on the tscc supercomputer for frequency freq
     on sliding windows of length N and spcing delta_n
@@ -385,7 +385,7 @@ def run_esprit(freq, p, model_order, N, delta_n):
             spacing of windows
     """
     now = time.time()
-    x = np.load(get_fname(freq))
+    x = np.load(get_fname(freq), alt=alt)
     print(get_fname(freq))
     #x = np.load('npy_files/'+str(freq) + '_short.npy') #this is data from 35 to 40 minutes into S5
     #x = np.load('npy_files/'+str(freq) + '_short_hilb.npy') #this is data from 35 to 40 minutes into S5
@@ -492,7 +492,7 @@ def check_fest(freq, N, delta_n):
     """ Compare to walker?  """
     #i1 = int(15*60*1500 / delta_n)
     #i2 = int(40*60*1500/delta_n)
-    i1, i2 = 0, 6000
+    i1, i2 = 0, -1
     x,y,z = load_fest(freq, N, delta_n)
     x = x[:,i1:i2]
     y = y[:,i1:i2]
@@ -501,10 +501,11 @@ def check_fest(freq, N, delta_n):
     best_inds_amp = np.argmin(z, axis=0)
     i = np.linspace(0, best_inds_err.size-1, best_inds_err.size,dtype=int)
     fig, axes = plt.subplots(3,1)
-    axes[0].plot(i, x[best_inds_err,i],color='b')
-    axes[0].plot(i, x[best_inds_amp,i],color='g')
-    axes[1].plot(i, y[best_inds_err, i], color='b')
-    axes[2].plot(i, z[best_inds_amp, i], color='g')
+    t = i*delta_n/1500 / 60
+    axes[0].plot(t, x[best_inds_err,i],color='b')
+    axes[0].plot(t, x[best_inds_amp,i],color='g')
+    axes[1].plot(t, y[best_inds_err, i], color='b')
+    axes[2].plot(t, z[best_inds_amp, i], color='g')
     fig.suptitle(str(freq))
     fig1, axes = plt.subplots(2,1)
     axes[0].acorr(x[best_inds_amp, i], detrend=detrend)
@@ -540,6 +541,37 @@ def comp_fest(freqs, N, delta_n):
         #axes[2].plot(i, y[best_inds_amp, i], color='g')
         axes1.acorr(x[best_inds_amp, i], detrend=detrend)
 
+def comp_two_fest(freqs, N, delta_n):
+    """ Compare to walker?  """
+    i1 = int(15*60*1500 / delta_n)
+    i2 = int(40*60*1500/delta_n)
+    #i1, i2 = 0, -1
+    fig, axes = plt.subplots(1,1)
+    fig1, axes1 = plt.subplots(1,1)
+    check = 0
+    x,y,z = load_fest(freqs[0], N, delta_n)
+    x = x[:,i1:i2]
+    y = y[:,i1:i2]
+    z = z[:,i1:i2]
+    best_inds_err = np.argmin(y, axis=0)
+    i = np.linspace(0, best_inds_err.size-1, best_inds_err.size,dtype=int)
+    ref_x = x[best_inds_err,i]
+    ratio = 1
+    check = 1
+
+    
+    x,y,z = load_fest(freqs[1], N, delta_n)
+    x = x[:,i1:i2]
+    y = y[:,i1:i2]
+    z = z[:,i1:i2]
+    curr_x = x[best_inds_err, i]
+    ratio = curr_x@ref_x.T / (np.square(np.linalg.norm(curr_x)))
+    axes.plot(i, (curr_x*ratio))
+    axes.plot(i, ref_x)
+    #axes[1].plot(i, z[best_inds_amp, i], color='b')
+    #axes[2].plot(i, y[best_inds_amp, i], color='g')
+    #axes1.acorr(x[best_inds_amp, i], detrend=detrend)
+    axes1.plot(i, ref_x - curr_x*ratio)
 
 
 if __name__ == '__main__':
@@ -550,7 +582,7 @@ if __name__ == '__main__':
     p = 1 
     M = 40
 
-    run_esprit(freq, p, M, N, delta_n)
+    run_esprit(freq, p, M, N, delta_n, alt=True)
 
 #plt.figure()
 #test_esprit(freq,p,M,T)

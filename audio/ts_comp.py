@@ -48,12 +48,22 @@ def get_bw(freq):
     Use formula
     fs/cw + f*3*(1/1450-1/1800) derived in my notes
     also add a little leeway for potential error in f_center
+    
     """
     B = freq/1500 + freq*3*(1/1450 - 1/1700)
     fc_err = freq*(.4/1500)
     B += fc_err
     return B
 
+def get_alt_bw(freq):
+    """ 
+    8-10 
+    I want to try one more with a smaller bandwidth
+    so i'm cutting it in half
+    """
+    B = get_bw(freq)
+    B /= 2
+    return B
 
 def get_order(freq):
     """
@@ -78,14 +88,16 @@ def get_fc(freq):
     fc = freq*(1 + 2.4/1500)
     return fc
     
-def get_fname(freq):    
+def get_fname(freq, alt=False):    
     order = get_order(freq)
     B = get_bw(freq)
+    if alt==True:
+        B /= 2
     df = B/2
     fname= '/oasis/tscc/scratch/fakins/data/swellex/' + '_'.join([str(freq), str(order), str(df)[:6]]) + '.npy'
     return fname
 
-def filter_x(freq_s, start_ind=0, end_ind=-1):
+def filter_x(freq_s, start_ind=0, end_ind=-1, alt=False):
     """
     For each frequency in freqs, 
     take in the swellex numpy array 
@@ -96,6 +108,8 @@ def filter_x(freq_s, start_ind=0, end_ind=-1):
             frequencies at which to perform the 
             phase estimation
         df - bandwidth of td filter
+        alt - Bool
+            flag to mess around a bit
     Output 
         None
         saves an array for each frequency in freqs
@@ -105,6 +119,8 @@ def filter_x(freq_s, start_ind=0, end_ind=-1):
         data is saved at froot """ 
     order = get_order(freq)
     B = get_bw(freq)
+    if alt == True:
+        B /= 2
     df = B/2
     fc = get_fc(freq)
     print('order', order, 'fc', fc, 'df', df)
@@ -114,7 +130,8 @@ def filter_x(freq_s, start_ind=0, end_ind=-1):
     x = np.load('/oasis/tscc/scratch/fakins/data/swellex/s5_good.npy')
     x = x[:,start_ind:end_ind]
     x_ts = convolve1d(x, filt, mode='constant')
-    np.save('/oasis/tscc/scratch/fakins/data/swellex/' + '_'.join([str(freq), str(order), str(df)[:6]]) + '.npy', x_ts)
+    fname = get_fname(freq, alt=True)
+    np.save(fname, x_ts)
     return
 
     
@@ -122,9 +139,9 @@ def filter_x(freq_s, start_ind=0, end_ind=-1):
 
 if __name__ == '__main__':
     freq = int(sys.argv[1])
-    start_ind = int(sys.argv[2])
-    end_ind = int(sys.argv[3])
-    filter_x(freq)
+    #start_ind = int(sys.argv[2])
+    #end_ind = int(sys.argv[3])
+    filter_x(freq, alt=True)
 #    tscc_coh_sum(freqs)
 
 
