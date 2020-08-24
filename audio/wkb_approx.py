@@ -5,7 +5,7 @@ from scipy.interpolate import interp1d
 from scipy.integrate import quad
 from scipy.signal import detrend
 import numpy.polynomial.legendre as le
-from swellex.audio.modal_inversion import ModeEstimates,unwrap
+from swellex.audio.modal_inversion import ModeEstimates,unwrap, make_param_model
 
 '''
 Description:
@@ -127,23 +127,9 @@ def invert_q(zr, mode_shape):
         
     return
 
-def make_param_model(om, om_m):
-    """
-    Given knowledge of source frequency om = 2pifreq_s
-    and estimates of om_m (the doppler shifted modes)
-    form matrix that relates source velocity and mean ssp
-    to mode shape wavenumbers kz
-    """
-    om_m = np.array(om_m).reshape(len(om_m),1)
-    model_mat = np.zeros((len(om_m), 2))
-    om_col = np.array([om]*len(om_m))
-    om_col = om_col.reshape(len(om_col),1)
-    model_mat[:,0] = np.square(om_col[:,0])
-    model_mat[:,1] = -np.square((om_m - om_col)[:,0])
-    return model_mat
 
 def test_inv():
-    freq = 127
+    freq = 49
     v = -2.4
     phi, krs = load_mode_model(freq)
     zr_inter = np.linspace(94.125, 212.25,64)
@@ -164,14 +150,18 @@ def test_inv():
     kz_pred = model_mat@params
 
     delta_c = ssp - np.mean(ssp)
-    me = ModeEstimates(freq, [phi[:,i] for i in range(len(krs))])
-    me.get_kz_list() 
+    me = ModeEstimates(freq, [phi[1:,i] for i in range(len(krs))], fi=list(om_m/2/np.pi))
+    me.get_real_shapes()
+    me.get_smooth_shapes()
+    me.kz_estimate()
     kzs = me.kzs
+    print(kzs)
 
 
     """ Now invert and see how we do..."""
     inv = np.linalg.inv(model_mat.T@model_mat)@model_mat.T
     p = inv@np.square(kzs)
+    print(p)
     v_hat = 1/np.sqrt(p[1])
     c_hat = 1/np.sqrt(p[0])
     if np.sign(np.median(om_m-om)) > 0:
