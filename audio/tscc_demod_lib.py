@@ -2,9 +2,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 from swellex.ship.ship import get_good_ests, good_time
 from swellex.audio.autoregressive import load_fest, esprit
-from swellex.audio.ts_comp import get_fname, get_bw
-from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks, hilbert
+from swellex.audio.ts_comp import get_fname, get_bw, get_order
+from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks, hilbert, cheby1, sosfilt, decimate
 from scipy.interpolate import interp1d
+import scipy.linalg as la
 import pickle
 import multiprocessing as mp
 import os
@@ -20,7 +21,6 @@ Date: 6/23/2020
 
 Author: Hunter Akins
 '''
-
 
 def load_ship_ests(source_depth, chunk_len, ship_root = '/oasis/tscc/scratch/fakins/', r0=7703):
     if source_depth == 9:
@@ -141,9 +141,9 @@ def get_Theta(df, theta0=0):
     theta0 - float (int is fine too) 
         initial phase offset to start at 
         doesn't actually matter if you're doing incoh"""
-    Theta =[theta0]
-    for i in range(df.size-1):
-        Theta.append(Theta[-1] + 2*np.pi*df[i]*1/1500)
+    dt = 1/1500
+    Theta = np.cumsum(df[::-1])*2*np.pi*dt
+    Theta= -Theta[::-1]
     return np.array(Theta)
 
 def get_F(gamma, Theta):    
@@ -193,13 +193,18 @@ def f_search(f_grid, x, start_min=0, end_min=40):
     return np.array(vals)
 
 def get_f_mat(f_grid, start_min, end_min, deep=False):
-    now = time.time()
     omegs = 2*np.pi*f_grid
     """ get relevant time grid """
     t = np.arange(start_min*60, end_min*60, 1/1500)
+    omegs = omegs.reshape(omegs.size, 1)
     if deep == True:
         good_inds = [i for i in range(len(t)) if good_time(t[i])]
         t = t[good_inds]
+    t = t.reshape(1, t.size)
+    now = time.time()
+    mat = np.exp(-complex(0,1)*omegs*t)
+    print('second arr pop time', time.time() -now)
+    now = time.time()
     mat = np.zeros((len(omegs), t.size), dtype=np.complex128)
     i = 0
     for omeg in omegs:
@@ -280,7 +285,6 @@ def mode_filter(freq, deep=False,chunk_len=1024, start_min=0, end_min=40,suffix=
         v = v[:-4]
     else:
         i, t, r, v =load_ship_ests(9, chunk_len)
-    x = np.load('/oasis/tscc/scratch/fakins/' + str(freq) + '_ts.npy')
     mode_mat= np.load('/home/fakins/code/swellex/audio/npy_files/' + 'mode_mat_' + str(freq) + '.npy')
     inv = np.linalg.pinv(mode_mat)
     x = inv@x
@@ -481,6 +485,7 @@ def rescale_f_vals(f_vals_curr, f_vals):
     return f_vals
 
 def get_relevant_data(freq, start_min, end_min):
+    print(get_fname(freq))
     x = np.load(get_fname(freq))
     ind1, ind2 = int(start_min*60*1500), int(end_min*60*1500)
     x = x[:,ind1:ind2]
@@ -514,10 +519,76 @@ def window_x(x):
     """
     N = x.shape[1]
     window = np.hamming(N)
-    x = x*N
+    x = x*window
     return x
 
-def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, suffix='nb', folder_root='/oasis/tscc/scratch/fakins/', num_modes=6, deep=False):
+def get_mode_mat(freq):
+    x = np.load('/home/fakins/code/swellex/audio/npy_files/'+str(freq) + '_mode_mat.npy')
+    return x
+
+def est_range_env(x, t):
+    """
+    Given data x, estimate the range envelope
+    """
+    sensor0 = hilbert(x[0,:])
+    num_samps = sensor0.size
+    chunk_size = 40*1500
+    chunk_spacing = 20*1500
+    num_chunks = (num_samps - chunk_size) // chunk_spacing
+    print('num chunks', num_chunks)
+    chunk_inds = [slice(chunk_spacing*i, chunk_spacing*i+chunk_size) for i in range(num_chunks)]
+    amps = []
+    times = []
+    for chunk in chunk_inds:
+        vals = abs(sensor0[chunk])
+        mid_time = np.median(t[chunk])
+        amp_est = np.max(vals)
+        amps.append(amp_est)
+        times.append(mid_time)
+    plt.figure()
+    plt.plot(times,amps)
+    plt.savefig('amp.png')
+    
+    return
+
+def make_data_fig(freq, t, x):
+    fig = plt.figure()
+    plt.plot(t/60, x[0,:])
+    plt.savefig(str(freq) + '_dats.png')
+    plt.close(fig)
+    return
+
+def make_fvals_plot(freq, f_vals, f_vals_curr):
+    fig =plt.figure()
+    plt.plot(f_vals)
+    plt.plot(f_vals_curr)
+    plt.savefig(str(freq) + '_comp.png')
+    plt.close(fig)
+    return
+
+def restrict_vals(t, x, f_vals, f_vals_curr):
+    bad_inds = np.array([i for i in range(len(t)) if not good_time(t[i])])
+    t[bad_inds] = 0 
+    x[:,bad_inds] = 0
+    f_vals[bad_inds] = 0
+    f_vals_curr[good_inds] = 0
+    return t, x, f_vals, f_vals_curr
+
+def save_figure(domain, vals, title, save_string):
+    """
+    Save a simple plot of vals
+    """
+    fig =plt.figure()
+    if type(domain) != type(None):
+        plt.plot(domain, vals)
+    else:
+        plt.plot(vals)
+    plt.suptitle(title)
+    plt.savefig(save_string)
+    plt.close(fig)
+    return
+
+def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, suffix='nb', folder_root='/oasis/tscc/scratch/fakins/', deep=False,mode_filter=False, svd=False, window=False):
     """
     Using ESPRIT freq estimation with narrower filters
     to try and look at spectrum
@@ -543,6 +614,7 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
 
     for chunk_id, lim in enumerate(lim_list):
         chunk_id = str(chunk_id)
+        print(chunk_id)
         start_min = lim[0]
         end_min = lim[1]
 
@@ -556,22 +628,58 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
         ref_fhat = get_relevant_fhat(ref_fhat, ref_err, start_min, end_min, delta_n)
         f_vals = interp_fhat(ref_fhat, start_min, end_min, delta_n)
 
+        """ Load data and restrict to start_min, end_min """
+        t = np.arange(start_min*60, end_min*60, 1/1500)
+        x = get_relevant_data(freq, start_min, end_min)
+
+        """ If SVD flag is set, do a PCA filter """
+        if svd==True:
+            U, s, Vh = la.svd(x, full_matrices=False)
+            print(U.shape, s.shape, Vh.shape)
+            count = 0
+            while s[count] > .1:
+                count += 1
+            print(count)
+            U = U[:,:count]
+            s = s[:count]
+            Vh = Vh[:count, :]
+            x = U@np.diag(s)@Vh
+            print(x.shape)
+            save_figure(None, s, 'SVD', str(freq) + '_sing_vals.png')
+
+
+        """ If window flag is set, window the data """
+        if window==True:
+            x = window_x(x)
+
+
+        """ Zero out bad section of data """
+        if deep == True:
+            t, x, f_vals, f_vals_curr = restrict_vals(t, x, f_vals, f_vals_curr)
+
+        """ Save a visual of the data for checks"""
+        save_figure(t, x[0,:], 'Data on sensor1', str(freq) + '_dats.png')
+
         """ Now scale the reference freq to the freq of interest """
         f_vals = rescale_f_vals(f_vals_curr, f_vals)
 
-        """ Load data and restrict to start_min, end_min """
-        x = get_relevant_data(freq, start_min, end_min)
-        x = window_x(x)
-        
 
+        """ Save visual of f_vals """
+        make_fvals_plot(freq, f_vals, f_vals_curr)
+
+
+        """ If mode filtering """
+        if mode_filter==True:
+            mode_mat = get_mode_mat(freq)
+            x = np.linalg.pinv(mode_mat)@x
+            print(x.shape, mode_mat.shape)
+        
         """ Now estimate the phase noise due to accelerations """
         mean_f = np.mean(f_vals)
         dev_f = f_vals - mean_f 
+        save_figure(None, dev_f, 'dev f', str(freq) + '_dev_f.png')
         Theta = get_Theta(dev_f)
-        fig = plt.figure()
-        plt.plot(Theta)
-        plt.savefig('Theta.png')
-        plt.close(fig)
+        save_figure(None, Theta, 'Theta', str(freq) + '_Theta.png')
 
         """ Setup frequency search grid"""
         T = (end_min -start_min) * 60
@@ -582,37 +690,116 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
 
         """ Gamma iter will remove the phase noise and estimate the PSD at the values supplied in f_grid"""
         fmat = get_f_mat(f_grid, start_min, end_min,deep=deep) 
-
-        """ Zero out bad section of data """
-        if deep == True:
-            t = np.arange(start_min*60, end_min*60, 1/1500)
-            good_inds = np.array([i for i in range(len(t)) if good_time(t[i])])
-            t = t[good_inds]
-            x = x[:,good_inds]
-            Theta = Theta[good_inds]
-            fig = plt.figure()
-            plt.plot(t)
-            plt.savefig('t_grid.png')
-            plt.close(fig)
-            fig = plt.figure()
-            plt.plot(dev_f[good_inds])
-            plt.savefig('dev_f.png')
-            plt.close(fig)
-            
             
         for gamma in gammas:
             F = get_F(gamma, Theta) # this is the phase noise removal factor
             data = x*F
             vals = fmat@data.T
             vals = vals.T
-            peaks = np.zeros((63, num_modes))
-            for i in range(63):
-                peak = esprit(data[i,:], num_modes, 80)
-                print(abs(peak))
-                peaks[i,:] = abs(peak)
-            #vals =  gamma_iter(gamma, x, Theta, fmat)
+            peaks = np.zeros((63, 1)) # dummy ting if i ever implement ESPRIT
             output = DemodDat(freq, ref_freq, mean_f, df, gamma, vals, start_min, end_min, N, delta_n, peaks)
             output.save(chunk_id, suffix, folder_root=folder_root)
+    return
+
+def fest_baseband(freq, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, folder_root='/oasis/tscc/scratch/fakins/', deep=False, naive=False):
+    """
+    Using ESPRIT freq estimation with narrower filters
+    to correct for the Doppler broadening. 
+    Then estimate and compensate for range spreading. 
+    Then complex baseband the signal
+    freq - int
+        source freq
+    gammas - list of floats
+        gamma vals to search over
+    ref_freq - int
+        source freq to use f ests for to remove doppler
+    lim_list - list of lists of floats
+        each list element gives the start and end min of data chunk to look at
+        (default looks at one chunk from 15 min to 40 min)
+    N - int
+        length of data used in the instant. frequ. estimation
+    delta_n int
+        spacing of chunks used in inst. freq. estimation
+    folder_root - string
+        place to save output files
+    deep - Bool
+        flag to denote whether the signal is from deep (54 m) source
+        by default it's assumed to be from the shallow source
+    naive - Bool
+        flag to denote whether or not to use phase corrections
+    """
+    print('Reference freq', ref_freq)
+    for chunk_id, lim in enumerate(lim_list):
+        chunk_id = str(chunk_id)
+        print(chunk_id)
+        start_min = lim[0]
+        end_min = lim[1]
+
+        """ Load, select, and interpolate the f ests for freq """
+        fhat, err, amp = load_fest(freq,N=N, delta_n=delta_n, tscc=True)
+        fhat = get_relevant_fhat(fhat, err, start_min, end_min, delta_n)
+        f_vals_curr = interp_fhat(fhat, start_min, end_min, delta_n)
+
+        """ Repeat for the reference freq """
+        ref_fhat, ref_err, ref_amp = load_fest(ref_freq,N=N, delta_n=delta_n, tscc=True)
+        ref_fhat = get_relevant_fhat(ref_fhat, ref_err, start_min, end_min, delta_n)
+        f_vals = interp_fhat(ref_fhat, start_min, end_min, delta_n)
+
+        """ Load data and restrict to start_min, end_min """
+        t = np.arange(start_min*60, end_min*60, 1/1500)
+        x = get_relevant_data(freq, start_min, end_min)
+
+
+        """ Zero out bad section of data """
+        if deep == True:
+            t, x, f_vals, f_vals_curr = restrict_vals(t, x, f_vals, f_vals_curr)
+
+        """ Save a visual of the data for checks"""
+        save_figure(t, x[0,:], 'Data on sensor1', str(freq) + '_dats.png')
+
+        """ Now scale the reference freq to the freq of interest """
+        f_vals = rescale_f_vals(f_vals_curr, f_vals)
+
+        """ Save visual of f_vals """
+        make_fvals_plot(freq, f_vals, f_vals_curr)
+
+        """ Now estimate the phase noise due to accelerations """
+        mean_f = np.mean(f_vals)
+        dev_f = f_vals - mean_f 
+        save_figure(None, dev_f, 'dev f', str(freq) + '_dev_f.png')
+        Theta = get_Theta(dev_f)
+        save_figure(None, Theta, 'Theta', str(freq) + '_Theta.png')
+
+
+        """ Remove doppler broadening """
+        if naive==False:
+            F = get_F(1, Theta) # this is the phase noise removal factor
+            data = x*F
+        else:
+            data = x
+        
+        """ Demodulate """
+        lo = np.exp(complex(0,-1)*2*np.pi*mean_f*t)
+        vals = lo*data
+        print(vals.shape)
+    
+        """ Low pass filter/Decimate """
+        dec_factor = 150
+        baseband = decimate(vals, dec_factor, n = 128, ftype='fir')
+
+        dec_t = t[::150]
+        print(dec_t.size, baseband.shape)
+        #tmp = vals[0,:]
+        #tmp1 = baseband[0,:]
+        #print(vals.shape, baseband.shape)
+        #freqs = np.fft.fftfreq(tmp.size, 1/1500)
+        #freqs1 = np.fft.fftfreq(tmp1.size, 1/1500*dec_factor)
+        #fig,axes = plt.subplots(2,1)
+        #axes[0].plot(freqs, abs(np.fft.fft(tmp)))
+        #axes[1].plot(freqs1, abs(np.fft.fft(tmp1)))
+        #plt.savefig(str(freq) + '_lp_check.png')
+        x = Baseband(baseband, freq, ref_freq, mean_f, start_min, end_min, 1500/dec_factor, dec_t)
+        x.save(naive=naive)
     return
 
 def make_fname(folder_root, gamma, chunk_id, suffix=''):
@@ -651,41 +838,33 @@ class DemodDat:
             with open(fname, 'wb') as f:
                 pickle.dump(self, f)
 
-    
+class Baseband:
+    """  Hold results of decimating one of the band time series"""
+    def __init__(self, arr_vals, freq, ref_freq, mean_f, start_min, end_min, fs, t):
+        self.x = arr_vals # nd array of downsampled vals
+        self.freq = freq # signal source frequency
+        self.ref_freq = ref_freq # freq band used to estimate the phase noise
+        self.mean_f = mean_f # mean doppler shifted freq over range of interest
+        self.start_min = start_min # minute marker of decimated data
+        self.end_min = end_min # end minute marker
+        self.fs = fs  # new sampling rate of downsampled data
+        self.dt=  1/ fs
+        self.t = t # the resampled time values associated with each point
+   
+    def save(self,folder_root='/oasis/tscc/scratch/fakins/', overwrite=True, naive=False):
+        if naive == False:
+            fname = folder_root + str(self.freq) + '_baseband.pickle'
+        else:
+            fname = folder_root + str(self.freq) + '_naive_baseband.pickle'
+        if overwrite == False:
+            if os.path.isfile(fname):
+                print('Already been computed for . Overwrite is set to False, so returning without computing.')
+        else:
+            with open(fname, 'wb') as f:
+                pickle.dump(self, f)
+
 
 
 if __name__ == '__main__':
-
-    #doppler_sim()
-    x = np.load('npy_files/127_doppler_sim.npy')
-    print(x.shape)
-    x = x[0,:150000]
-    plt.plot(x)
-    plt.show()
-
-    local_analysis()
-    sys.exit(0)
-    deep_freqs = [49, 64, 79, 94, 112, 130, 148, 166, 201, 235, 283, 338, 388]
-    #test_script()
-
-
-    #x = np.load('npy_files/49_mini.npy')
-    #save_demod(49, 1, deep=True)
-
-    config_file = sys.argv[1]
-
-    with open('confs/' + config_file, 'r') as f:
-        lines = f.readlines()
-        json_str = lines[0]
-        diction = json.loads(json_str)
-    freq = diction['freq']
-    gamma = diction['gamma']
-    chunk_len = diction['chunk_len']
-    print(freq, gamma, chunk_len)
-    deep = False
-    if freq in deep_freqs:
-        deep = True
-    track_chunks = [[0, 15], [10, 25], [20,35],[30, 45], [40,55]]
-    for i, track_chunk in enumerate(track_chunks):
-        save_demod(freq, gamma, deep=deep, chunk_len=chunk_len,start_min=track_chunk[0], end_min=track_chunk[1], suffix='chunk_'+str(i))
-
+    fest_baseband(49, ref_freq=388, lim_list=[[5, 30]], deep=True)
+    print('npothin to do')
