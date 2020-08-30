@@ -9,6 +9,8 @@ from scipy.signal import detrend, convolve, firwin, hilbert
 #from matplotlib.widgets import PolygonSelector
 #from matplotlib.path import Path
 from swellex.audio.brackets import Bracket, get_brackets, form_good_pest, form_good_alpha,get_pest
+from swellex.audio.kay import get_pest_fname
+from swellex.audio.config import get_proj_root
 
 '''
 Description:
@@ -857,7 +859,12 @@ def auto_write_indices(fname, cpa=False):
         newfile.write(']')
     return
 
-def auto_gen_brackets(freqs, chunk_size, var_lim=.5):
+def get_bracket_name(freq, proj_string='s5'):
+    proj_root = get_proj_root(freq, proj_string)
+    bname = proj_root + 'good_brackets_' + str(freq) + '.pickle'
+    return bname
+
+def auto_gen_brackets(freqs, chunk_size, var_lim=.5, proj_string='s5'):
     """Generate the brackets for 
     the full set of sensors , frequencies 
     For each frequency, load up the phase estimates
@@ -869,14 +876,16 @@ def auto_gen_brackets(freqs, chunk_size, var_lim=.5):
     chunk_size - int
         size of data chunks to consider (number of samples)
     """
-    total_samples = 60*75*1500
-    num_brackets = int(total_samples // chunk_size)-1
     for f_ind in range(len(freqs)):
         good_bracks = []
         f=  freqs[f_ind]
         print('Processing frequency ', f)
-        data_loc = '/oasis/tscc/scratch/fakins/data/swellex/' + str(f) + '_pest.npy'
+        data_loc = get_pest_fname(f, proj_string=proj_string)
+        print('Loading phase estimates from ', data_loc)
         pests = np.load(data_loc)
+        total_samples = pests.shape[1]
+        print('Number of time smaples', total_samples, total_samples/60/1500)
+        num_brackets = int(total_samples // chunk_size)-1
         for j in range(num_brackets):
             start = j*chunk_size
             end = (j+1)*chunk_size
@@ -891,7 +900,9 @@ def auto_gen_brackets(freqs, chunk_size, var_lim=.5):
                     bracket = Bracket([start, end], sensor_ind, f, f_ind,data_loc)
                     good_bracks.append(bracket)
         print('Pickling brackets for frequency ', f)
-        with open('/oasis/tscc/scratch/fakins/data/swellex/good_brackets_' + str(f) +'.pickle', 'wb') as ff:
+        brack_name = get_bracket_name(f, proj_string)
+        print('data loc', brack_name)
+        with open(brack_name, 'wb') as ff:
             pickle.dump(good_bracks,ff)
 
 def check_bracks():
@@ -912,13 +923,14 @@ def check_bracks():
             plt.plot(dom,alpha, color='r')
         plt.savefig('127_check.png')
         
-def check_pest():
-    x = np.load('/home/fakins/data/s5.npy')
+def check_pest(freq, proj_dir='s5'):
+    fname = get_pest_fname(freq, proj_dir)
+    x = np.load(fname)
     x0 = x[0,:]
-    plt.figure()
-    plt.plot(x0)
+    fig = plt.figure()
+    plt.plot(detrend(x0))
     plt.savefig('x0.png')
-    plt.clf()
+    plt.close(fig)
 
 def check_pest1():
     x = np.load('/home/fakins/data/swellex/127_pest.npy')
@@ -950,12 +962,13 @@ if __name__ == '__main__':
     freq = sys.argv[1]
     chunk_len = int(sys.argv[2])
     var = float(sys.argv[3])
+    proj_string = sys.argv[4]
     freq = int(freq)
     freqs = [freq]
     print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len, ' using a variance limit of ', var)
     #auto_write_indices(cpa=True)
-    auto_gen_brackets(freqs, chunk_len, var)
-#    check_pest()
+    auto_gen_brackets(freqs, chunk_len, var, proj_string=proj_string)
+    check_pest(freq, proj_dir=proj_string)
     #check_pest1()
 #    check_bracks()
 #    dats = get_pest(49,1)

@@ -123,13 +123,32 @@ def stick_together():
     np.save('/home/fakins/data/s5.npy',x)
     
     
-    
+def save_arcmfp1():    
+    """
+    Go through the 1 sio file for arcmfp1 (tape 14)
+    """
+    """ 
+    Load first relevant siofile
+    Throw out timer thing in last row and switch the order of array elements 
+    so that x[0,:] is the shallowest array eleemnt
+    """
+    fname = '/home/fakins/data/swellex3/SWex3_tape014_J203_2152.sio'
+    x,_ = sioread(**{'fname':fname})
+    print(x.shape)
+    x = x[:,::-1]
+    """ Throw out the timer element """
+    print(x[:100, 0])
+    x = x[:,1:]
+    """ Make it so that rows correspond to sensors """
+    x = x.T
+    np.save('/home/fakins/data/arcmfp1.npy', x)
     
 
 if __name__ == '__main__':
     """ load stream """
-    save_s5()
-    stick_together()
+    #save_s5()
+    #stick_together()
+    save_arcmfp1()
     #fname = '/media/hunter/ExtHard/Data/swellex/VLA_J131_2302'
     ##s = sioread(**{'fname':fname})
     ##s = load_swellex_stream()

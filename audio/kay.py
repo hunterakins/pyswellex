@@ -2,6 +2,8 @@ import numpy as np
 #from matplotlib import pyplot as plt
 from scipy.signal import hilbert, firwin,convolve, detrend
 from scipy.ndimage import convolve1d
+from swellex.audio.ts_comp import get_nb_fname
+from swellex.audio.config import get_proj_root
 import sys
 #import pickle 
 
@@ -319,10 +321,47 @@ def tscc_coh_sum(freqs):
         pest = get_p_est(x, fn, dfn, order)
         np.save('/oasis/tscc/scratch/fakins/data/' + str(f) +'_coh_pest.npy', pest)
         print('First pest samps', pest[:10])
-        
 
-    
-    
+def get_pest_fname(freq, proj_string='s5'):
+    proj_root = get_proj_root(proj_string)
+    fname = proj_root + str(freq) + '_pest.npy'
+    return fname
+        
+def narrow_tscc_pest(freqs, proj_string='s5'):
+    """
+    For each frequency in freqs, 
+    and generate an array of the phases ests for 
+    that freq using prefiltered ts
+
+    Input 
+        freqs - list of floats/ints    
+            frequencies at which to perform the 
+            phase estimation
+        swellex3 - bool
+            flag to detect which project
+            to process
+    Output 
+        None
+        saves an array for each frequency in freqs
+        to /home/fakins/data with the name
+        freq_pest.npy 
+        if save is True, the bandpass filtered
+        data is saved at froot """ 
+    for f in freqs:
+        fname = get_nb_fname(f,proj_string=proj_string)
+        print('Loading filtered time series from ', fname)
+        x = np.load(fname)
+        print(x.shape)
+        un = hilbert(x)
+        """ Estimate the phase """
+        yn, zn = diff_seq_vec(un)
+        ddp = np.angle(zn) 
+        p0 = np.angle(un[:,0])
+        pest = undiff_vec(p0, ddp, yn)
+        pest_name = get_pest_fname(f, proj_string=proj_string)
+        print('Saving phase estimates for ', f, ' Hz to ', pest_name)
+        np.save(pest_name, pest)
+    return
 
 if __name__ == '__main__':
     #sim_est()
@@ -334,12 +373,20 @@ if __name__ == '__main__':
     #freqs = [49, 64, 79, 94, 109, 112, 127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
     #freqs = [127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
     #data_run(freqs, sensor_inds, df)
+    """
+    This is the old pest
     freq = float(sys.argv[1])
     df = float(sys.argv[2])
     order = int(sys.argv[3])
     freqs = [freq]
     print('running tscc pest at ', freqs, ' with df ', df, ' and order ', order)
     tscc_pest(freqs, df, order=order, save=True, froot='/oasis/tscc/scratch/fakins/')
+    """
+    freq=  int(sys.argv[1])
+    proj_string = sys.argv[2]
+    narrow_tscc_pest([freq], proj_string=proj_string)
+
+    
 #    tscc_coh_sum(freqs)
 
 

@@ -2,6 +2,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy.signal import hilbert, firwin,convolve, detrend
 from scipy.ndimage import convolve1d
+from swellex.audio.config import get_proj_root, get_full_ts_name
 import sys
 #import pickle 
 
@@ -76,7 +77,7 @@ def get_order(freq):
     N = np.power(2, int(np.log2(N))+1)
     return N
 
-def get_fc(freq):
+def get_fc(freq, proj_string):
     """
     Get the center doppler shifted frequency
     So this can be made way more complicated...
@@ -85,22 +86,25 @@ def get_fc(freq):
     I account for possible errors by increasing the bandwidth
     I can refine this later once I perform the frequency estimations
     """
-    fc = freq*(1 + 2.4/1500)
+    if proj_string == 's5':
+        fc = freq*(1 + 2.4/1500)
+    if proj_string == 'arcmfp1':
+        fc= freq*(1 - 2.5/1500)
     return fc
     
-def get_fname(freq, alt=False):    
+def get_nb_fname(freq, proj_string='s5'):    
     order = get_order(freq)
     B = get_bw(freq)
-    if alt==True:
-        B /= 2
     df = B/2
-    fname= '/oasis/tscc/scratch/fakins/data/swellex/' + '_'.join([str(freq), str(order), str(df)[:6]]) + '.npy'
+    proj_root = get_proj_root(proj_string)
+    fname= proj_root + '_'.join([str(freq), str(order), str(df)[:6]]) + '.npy'
+    print(df, fname)
     return fname
 
-def filter_x(freq_s, start_ind=0, end_ind=-1, alt=False):
+def filter_x(freq,proj_string='s5'):
     """
     For each frequency in freqs, 
-    take in the swellex numpy array 
+    take in the raw time series on the array
     and filter it
 
     Input 
@@ -108,8 +112,9 @@ def filter_x(freq_s, start_ind=0, end_ind=-1, alt=False):
             frequencies at which to perform the 
             phase estimation
         df - bandwidth of td filter
-        alt - Bool
-            flag to mess around a bit
+        swellex3 - Bool
+            distinguish between the swellex s5 event 
+            and the swellex-3 arcmfp event
     Output 
         None
         saves an array for each frequency in freqs
@@ -119,30 +124,28 @@ def filter_x(freq_s, start_ind=0, end_ind=-1, alt=False):
         data is saved at froot """ 
     order = get_order(freq)
     B = get_bw(freq)
-    if alt == True:
-        B /= 2
     df = B/2
-    fc = get_fc(freq)
+    fc = get_fc(freq, proj_string)
     print('order', order, 'fc', fc, 'df', df)
     filt = firwin(order, [fc-df, fc+df], fs=1500, pass_zero=False, window='hann')
     fr, fva = np.fft.fftfreq(order, 1/1500), np.fft.fft(filt)
-    print("Saving to ", '/oasis/tscc/scratch/fakins/data/swellex/' + '_'.join([str(freq), str(order), str(df)[:6]]) + '.npy')
-    x = np.load('/oasis/tscc/scratch/fakins/data/swellex/s5_good.npy')
-    x = x[:,start_ind:end_ind]
+    raw_data_name = get_full_ts_name(proj_string)
+    print('Loading ts at ', raw_data_name)
+    x = np.load(raw_data_name)
+    print('Appling the filter')
     x_ts = convolve1d(x, filt, mode='constant')
-    fname = get_fname(freq, alt=True)
+    fname = get_nb_fname(freq, proj_string=proj_string)
+    print('Saving the filtered output to ', fname)
     np.save(fname, x_ts)
     return
 
-    
-    
-
 if __name__ == '__main__':
     freq = int(sys.argv[1])
+    proj_string = sys.argv[2]
     #start_ind = int(sys.argv[2])
     #end_ind = int(sys.argv[3])
-    filter_x(freq, alt=True)
+    filter_x(freq, proj_string=proj_string)
 #    tscc_coh_sum(freqs)
 
 
-#    lfm_chirp()
+    lfm_chirp()

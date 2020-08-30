@@ -6,6 +6,9 @@ from scipy.signal import detrend
 import pickle
 import time
 from swellex.audio.brackets import Bracket, get_brackets, get_autobrackets,form_good_pest, form_good_alpha, get_pest
+from swellex.audio.proc_phase import get_bracket_name
+from swellex.audio.kay import get_pest_fname
+from swellex.audio.config import get_proj_root
 
 
 '''
@@ -714,7 +717,7 @@ def look_at_chunk_shallow():
         plt.show()
 
 class AlphaEst:
-    def __init__(self, chunk_len, theta_list, sigma_list):
+    def __init__(self, chunk_len, theta_list, sigma_list, f_list):
         """
         chunk_len - int
             nuber of samples in a chunk
@@ -722,11 +725,14 @@ class AlphaEst:
             the parameter estimates 
         sigma_list - list of numpy ndarrays 
             parameter covariance     
+        f_list - list of numpy ndarrays 
+            frequency estimates
         """
         self.chunk_len = chunk_len
         self.chunk_sec = chunk_len /1500
         self.thetas = theta_list
         self.sigmas = sigma_list
+        self.freqs = f_list
 
     def get_t_grid(self):
         """ Make the time domain of the samples """
@@ -749,8 +755,8 @@ class AlphaEst:
             rgrid.append(rcurr)
         return rgrid
             
-def get_tscc_bracket(freq):
-    pickle_name = '/home/fakins/data/swellex/good_brackets_' +str(freq) + '.pickle'
+def get_tscc_bracket(freq,proj_string='s5'):
+    pickle_name = get_bracket_name(freq, proj_string)
     with open(pickle_name, 'rb') as f:
         brackets = pickle.load(f)
     return brackets
@@ -874,19 +880,19 @@ def get_mega_H_inv(good_rows, rel_data, H, num_samps):
 #            H_pseudo[0,i*num_samps:(i+1)*num_samps] *= 0
     return H_pseudo, inv
 
-def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
+def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, proj_string='s5'):
     """
-    Perform an estimate of v for a series of chunks of length chunk_len(seconds)
+    Perform an estimate of v for a series of chunks of length chunk_len samples
     Alternative approach that should be easier to code
     Simply load up the full array of phase estimates    
     (all sensors and all times)
     Then use the good_brackets file to
-    select which sensors are good for each 5 second chunk
+    select which sensors are good for each chunk
     Those that are bad, assign a large covariance
     to the measurement (10000 or whatever)
     Then I only compute H once, and upate the 
     pseudoinverse using the cov matrix for this bracket
-    down side is that only 5 second chunk lenght is good    
+    down side is that only     
     Using the data on the tscc supercomputer    
 
     chunk_len - int
@@ -899,11 +905,13 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
     """
 
     """ Fetch the bracket list """
-    b_list = get_tscc_bracket(freq)
+    b_list = get_tscc_bracket(freq, proj_string)
     first_ind, last_ind = start_min*60*1500, end_min*60*1500
     first_ind, last_ind = int(first_ind), int(last_ind)
     #pests = np.load('/home/fakins/data/swellex/'+str(freq) + '_pest.npy')
-    pests = np.load('/oasis/tscc/scratch/fakins/data/swellex/'+str(freq) + '_pest.npy')
+    pest_name = get_pest_fname(freq, proj_string)
+    print('loading pests from', pest_name)
+    pests = np.load(pest_name)
     #pests = pests[:,first_ind:last_ind]
     total_len = last_ind-first_ind
     H = mega_H(chunk_len)
@@ -919,6 +927,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
     print('num_chunks', num_chunks)
     theta_chunks = [] # estimate list
     sigma_chunks = [] # error covariance list
+    f_chunks = [] # doppler shift estimate list
     dt = 1/1500
     t = np.linspace(0, dt*(chunk_len -1), chunk_len)
     prin:('total samples to proc' ,total_len)
@@ -942,6 +951,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
             rel_data = rel_data.reshape(rel_data.size, 1)
             alpha = pseudo@rel_data
         theta_chunks.append(alpha)
+        f_chunks.append(f - alpha*freq/1500)
 #        sigma_chunks.append(cov)
         #    print('no open brackets')
         #    obj = theta_chunks[-1]
@@ -954,7 +964,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
 
         print(alpha)
 #        """ Save progress """
-        alpha_est = AlphaEst(chunk_len, theta_chunks, sigma_chunks)
+        alpha_est = AlphaEst(chunk_len, theta_chunks, sigma_chunks, f_chunks)
         with open(pickle_name, 'wb') as f:
             pickle.dump(alpha_est, f)
 
@@ -962,15 +972,20 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min):
     return
 
     
+def get_doppler_est_pickle_name(freq, chunk_len, var, proj_string='s5'):
+    proj_root = get_proj_root(proj_string)
+    pickle_name = proj_root + str(chunk_len) + '_' + str(freq) + '_' + str(var) + '.pickle'
+    return pickle_name
+
 if __name__ == '__main__':
     start = time.time()
 
     chunk_len = int(sys.argv[1])
     freq = int(sys.argv[2])
     start_min, end_min = float(sys.argv[3]), float(sys.argv[4])
-    df = float(sys.argv[5])
-    var = float(sys.argv[6])
-    pickle_name = '/oasis/tscc/scratch/fakins/' + str(chunk_len) + '_' + str(freq) + '_' + str(df) + '_' + str(var) + '.pickle'
+    var = float(sys.argv[5])
+    proj_string = sys.argv[6]
+    pickle_name= get_doppler_est_pickle_name(freq, chunk_len, var, proj_string)
     print('Computing the velocity estimates using ' + str(chunk_len/1500) + ' second chunks at frequency', freq)
     print('for data from min', start_min, 'to data ', end_min)
-    alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min)
+    alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, proj_string=proj_string)
