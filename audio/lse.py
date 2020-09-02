@@ -737,7 +737,7 @@ class AlphaEst:
     def get_t_grid(self):
         """ Make the time domain of the samples """
         num_samples = len(self.thetas)
-        self.tgrid= np.linspace(0, (num_samples-1)*self.chunk_len, num_samples)
+        self.tgrid= np.linspace(0, (num_samples-1)*self.chunk_sec, num_samples)
         return self.tgrid
 
     def add_t0(self, t0):
@@ -838,21 +838,21 @@ def compute_chunk_tscc(chunk_len, pickle_name, freq, start_min, end_min):
             x.data = 0    
     return theta_chunks, sigma_chunks
 
-def mega_H(chunk_len):
+def mega_H(chunk_len, num_sensors):
     """ Make a big model matrix for the 63 element array """
     """ 
     chunk_len - int
         number of samples in a chunk
     """
     chunk_sec = chunk_len /1500 
-    H = np.zeros((63*chunk_len,1))
+    H = np.zeros((num_sensors*chunk_len,1))
     dt = 1/1500
     t = np.linspace(0, chunk_sec-dt, chunk_len)
-    for i in range(63):
+    for i in range(num_sensors):
         H[i*chunk_len:(i+1)*chunk_len,0] = t
     return H
 
-def get_mega_H_inv(good_rows, rel_data, H, num_samps):
+def get_mega_H_inv(good_rows, rel_data, H, num_samps, num_sensors):
     """ 
     Compute H pseudo inverse
     Since H psuedo inverse is
@@ -864,7 +864,7 @@ def get_mega_H_inv(good_rows, rel_data, H, num_samps):
     H """
     CiH = np.zeros(H.shape)
     CiH[:,:] = H
-    for i in range(63):
+    for i in range(num_sensors):
         if i in good_rows:
             row = rel_data[i,:]
             row = detrend(row)
@@ -912,9 +912,11 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, pr
     pest_name = get_pest_fname(freq, proj_string)
     print('loading pests from', pest_name)
     pests = np.load(pest_name)
+    num_sensors = pests.shape[0]
+    print('num sensors' , num_sensors)
     #pests = pests[:,first_ind:last_ind]
     total_len = last_ind-first_ind
-    H = mega_H(chunk_len)
+    H = mega_H(chunk_len, num_sensors)
 
     poly_order = 1
     num_f = 0 # no fourier fitting
@@ -930,7 +932,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, pr
     f_chunks = [] # doppler shift estimate list
     dt = 1/1500
     t = np.linspace(0, dt*(chunk_len -1), chunk_len)
-    prin:('total samples to proc' ,total_len)
+    print('total samples to proc' ,total_len)
     for chunk in range(num_chunks):
         start_ind = chunk_len*chunk + first_ind
         end_ind = start_ind + chunk_len
@@ -938,7 +940,7 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, pr
         """ Get relevant data"""
         rel_data = pests[:, start_ind:end_ind]
         """ Set first value to 0"""
-        rel_data -= (rel_data[:,0]).reshape(63,1)
+        rel_data -= (rel_data[:,0]).reshape(num_sensors,1)
         rel_data = 1500*(rel_data / 2/np.pi/freq - t)
 
         """ Get the good rows """
@@ -947,11 +949,12 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, pr
         if len(good_rows) == 0:
             alpha = 0
         else:
-            pseudo, cov = get_mega_H_inv(good_rows, rel_data,H, chunk_len)
+            pseudo, cov = get_mega_H_inv(good_rows, rel_data,H, chunk_len, num_sensors)
             rel_data = rel_data.reshape(rel_data.size, 1)
             alpha = pseudo@rel_data
         theta_chunks.append(alpha)
-        f_chunks.append(f - alpha*freq/1500)
+        print(freq+alpha*freq/1500)
+        f_chunks.append(freq + alpha*freq/1500)
 #        sigma_chunks.append(cov)
         #    print('no open brackets')
         #    obj = theta_chunks[-1]
@@ -971,11 +974,20 @@ def alt_tscc_chunk_estimate(chunk_len, pickle_name, freq, start_min, end_min, pr
         """ close out brackets that won't appear again to conserve mem"""
     return
 
-    
-def get_doppler_est_pickle_name(freq, chunk_len, var, proj_string='s5'):
+def get_doppler_est_pickle_name(freq, chunk_len=1024, var=0.1, proj_string='s5'):
     proj_root = get_proj_root(proj_string)
     pickle_name = proj_root + str(chunk_len) + '_' + str(freq) + '_' + str(var) + '.pickle'
     return pickle_name
+
+def load_lse_fest(freq, chunk_len=1024, var=0.1, proj_str='s5'):
+    fname = get_doppler_est_pickle_name(freq, chunk_len, var, proj_str)
+    print(fname)
+    with open(fname, 'rb') as f:
+        alpha_est = pickle.load(f)
+        freqs = np.array(alpha_est.freqs)
+    num_samps = freqs.size
+    t_grid = np.linspace(chunk_len/1500* 0.5, chunk_len/1500 * (num_samps-1) + chunk_len / 1500*0.5,num_samps) 
+    return t_grid, freqs
 
 if __name__ == '__main__':
     start = time.time()

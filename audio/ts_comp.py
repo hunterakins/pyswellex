@@ -148,4 +148,3 @@ if __name__ == '__main__':
 #    tscc_coh_sum(freqs)
 
 
-    lfm_chirp()

@@ -86,6 +86,7 @@ def save_s5():
     first sio file
     ALso throw out timer thing in last row and switch the order
     This corresponds to 13*60*1500 samples
+    This way they are sorted in depth order (first element is shallowest)
     """
     fname = '/home/fakins/data/Swellex/VLA_J131_2302'
     x,_ = sioread(**{'fname':fname})
@@ -128,20 +129,38 @@ def save_arcmfp1():
     Go through the 1 sio file for arcmfp1 (tape 14)
     """
     """ 
-    Load first relevant siofile
-    Throw out timer thing in last row and switch the order of array elements 
-    so that x[0,:] is the shallowest array eleemnt
+    Some preliminary examination has revealed that:
+    The .sio file is a 7569000 by 65 element array
+    The 65th element is the timer sequence
+    The 64th element is corrupted
+    The 50th element has a sign error
+    
     """
     fname = '/home/fakins/data/swellex3/SWex3_tape014_J203_2152.sio'
     x,_ = sioread(**{'fname':fname})
-    print(x.shape)
-    x = x[:,::-1]
-    """ Throw out the timer element """
-    print(x[:100, 0])
-    x = x[:,1:]
-    """ Make it so that rows correspond to sensors """
+    print('Original shape', x.shape)
+    print('Transposing so that rows correspond to sensors')
     x = x.T
-    np.save('/home/fakins/data/arcmfp1.npy', x)
+    print('Shape after transposing', x.shape)
+    print('Throwing out timer element')
+    """ Throw out the timer element """
+    x = x[:-1,:]
+    print('Shape after timer removal', x.shape)
+    print('Throwing out bad first element')
+    x = x[:-1, :]
+    print('Reversing sign of 50th element')
+    x50 = x[49,:]
+    x50_mean = np.mean(x50)
+    print('Elementwise mean of time series', np.mean(x, axis=1))
+    corrected_x50 = -(x50 - x50_mean) + x50_mean
+    x[49,:] = corrected_x50
+    """ Now reverse the order of the channels so that the shallowest element is first """
+    x = x[::-1, :]
+    print('Final array shape', x.shape)
+    """  Save to permament tscc storage """
+    np.save('/home/fakins/data/arcmfp1/arcmfp1.npy', x)
+    """ Also save to scratch """
+    np.save('/oasis/tscc/scratch/fakins/data/arcmfp1/arcmfp1.npy', x)
     
 
 if __name__ == '__main__':

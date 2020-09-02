@@ -860,7 +860,7 @@ def auto_write_indices(fname, cpa=False):
     return
 
 def get_bracket_name(freq, proj_string='s5'):
-    proj_root = get_proj_root(freq, proj_string)
+    proj_root = get_proj_root(proj_string)
     bname = proj_root + 'good_brackets_' + str(freq) + '.pickle'
     return bname
 
@@ -968,7 +968,7 @@ if __name__ == '__main__':
     print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len, ' using a variance limit of ', var)
     #auto_write_indices(cpa=True)
     auto_gen_brackets(freqs, chunk_len, var, proj_string=proj_string)
-    check_pest(freq, proj_dir=proj_string)
+    #check_pest(freq, proj_dir=proj_string)
     #check_pest1()
 #    check_bracks()
 #    dats = get_pest(49,1)
