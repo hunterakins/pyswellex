@@ -28,6 +28,8 @@ def copy_over_chunks(freq, num_chunks):
     os.chdir('..')
 
 def copy_over_f_demod(freq):
+    if str(freq) not in os.listdir('npy_files'):
+        os.mkdir('npy_files/' + str(freq))
     os.chdir('npy_files/' + str(freq))
     dirs = os.listdir()
     print(dirs)
@@ -52,6 +54,6 @@ def copy_over_fests(freq, N=1500, delta_n=750):
 
 freq = int(sys.argv[1])
 #copy_over_chunks(freq, 1)
-copy_over_f_demod(freq)
-#copy_over_fests(freq)
+#copy_over_f_demod(freq)
+copy_over_fests(freq)
 

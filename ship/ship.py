@@ -494,17 +494,20 @@ def form_shallow_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
     s_freqs = [232, 280,335,385]
     ests = []
     for sf in s_freqs:
-            pickle_name =pickle_root + str(chunk_len) + '_' + str(sf) +'.pickle'
-            v_est= get_est(pickle_name)
-            for i in range(len(v_est.thetas)):
-                x = v_est.thetas[i]
-                if x == 0:
-                    x = np.zeros(v_est.thetas[0].shape)
-                    v_est.thetas[i] = x
-            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
-            v_est.thetas = v_est.thetas[:-1]
-            v_est.get_t_grid()
-            ests.append(v_est)
+        pickle_name =pickle_root + str(chunk_len) + '_' + str(sf) +'_0.1.pickle'
+        v_est= get_est(pickle_name)
+        for i in range(len(v_est.thetas)):
+            x = v_est.thetas[i]
+            if x == 0:
+                x = np.zeros(v_est.thetas[0].shape)
+                v_est.thetas[i] = x
+        v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+        v_est.thetas = v_est.thetas[:-1]
+        v_est.get_t_grid()
+        f = sf - v_est.thetas*sf/1500
+        ests.append(v_est)
+        plt.plot(f)
+        plt.show()
 
     """ Compute the mean estimate """ 
     ind = False
@@ -528,6 +531,7 @@ def form_shallow_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
     """ Identify outliers and update the mean est """
     """ Also update the errorbars """
     outlier_inds = []
+    median_est = []
     for i in range(len(errs)):
         if errs[i] > 3*mean_err:
             msmts = [x.thetas[i] for x in ests]
@@ -538,8 +542,13 @@ def form_shallow_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
             okay_msmts = [msmts[i] for i in range(len(ests)) if i != bad_ind]
             outlier_inds.append([bad_ind,i])
             mean_est[i] = np.mean(okay_msmts)
+            median_est.append(np.median(okay_msmts))
             new_err = np.var([mean_est[i] - x for x in okay_msmts])
             errs[i] = new_err
+
+    plt.plot(mean_est)
+    plt.plot(median_est)
+    plt.show()
 
     np.save(pickle_root+str(chunk_len) + 'sw_rr.npy', mean_est)
     np.save(pickle_root+str(chunk_len) + 'sw_rr_errs.npy', errs)
@@ -565,20 +574,24 @@ def form_deep_vel(chunk_len, pickle_root='/oasis/tscc/scratch/fakins/'):
     """
 
     """ First get the estimates """
-    d_freqs = [235, 283,338,388]
+    d_freqs = [49, 235, 283,338,388]
     ests = []
     for df in d_freqs:
-            pickle_name =pickle_root + str(chunk_len) + '_' + str(df) +'.pickle'
-            v_est= get_est(pickle_name)
-            for i in range(len(v_est.thetas)):
-                x = v_est.thetas[i]
-                if x == 0:
-                    x = np.zeros(v_est.thetas[0].shape)
-                    v_est.thetas[i] = x
-            v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
-            v_est.thetas = v_est.thetas[:-1]
-            v_est.get_t_grid()
-            ests.append(v_est)
+        pickle_name =pickle_root + str(chunk_len) + '_' + str(df) +'_0.1.pickle'
+        v_est= get_est(pickle_name)
+        for i in range(len(v_est.thetas)):
+            x = v_est.thetas[i]
+            if x == 0:
+                x = np.zeros(v_est.thetas[0].shape)
+                v_est.thetas[i] = x
+        v_est.thetas = -np.array(v_est.thetas).reshape(len(v_est.thetas))
+        v_est.thetas = v_est.thetas[:-1]
+        v_est.get_t_grid()
+        ests.append(v_est)
+        f = df - v_est.thetas*df/1500
+        ests.append(v_est)
+        plt.plot(f)
+        plt.show()
 
     """ Compute the mean estimate """ 
     ind = False
@@ -867,6 +880,11 @@ def simple_comp_test1():
 def plot_script():
     """ Script for playing around and looking at plots""" 
     mean_full = proc_shallow(2, tscc=True)
+    mean = mean_full
+    first_deriv = (mean[1:] - mean[:-1])/2
+    second_deriv = (first_deriv[1:] - first_deriv[:-1])/2
+    plt.figure()
+    plt.plot(second_deriv)
     plt.show()
     #np.save('npys/sw_2.npy', mean_full)
     #mean_full = proc_shallow(5, tscc=True)
@@ -875,6 +893,7 @@ def plot_script():
     mean = proc_deep(5, tscc=True)
     #mean = proc_deep(2, tscc=True)
     #mean_full = proc_deep(5)
+
     plt.show()
 
     #x = np.load('npys/1024sw_rr.npy')
@@ -894,11 +913,18 @@ def plot_script():
     plt.show()
 
 if __name__ == '__main__':
-    plot_script()
+    #plot_script()
 
-#    chunk_len = int(sys.argv[1])
-    #est = form_shallow_vel(chunk_len)
+    chunk_len = int(sys.argv[1])
+    est = form_shallow_vel(chunk_len, pickle_root='pickles/')
+    plt.show()
+    est = form_deep_vel(chunk_len, pickle_root='pickles/')
+    plt.show()
     x = np.load('1024sw_rr.npy')
+    y = np.load('tmp.npy')
+    plt.plot(x)
+    plt.plot(y)
+    plt.show()
     num_chunks = x.size
     dt = 1024/1500
     t = np.linspace(0, (num_chunks-1)*dt, num_chunks)
@@ -907,6 +933,7 @@ if __name__ == '__main__':
     plt.plot(t,x)
     plt.plot(deep_t,y)
     plt.show()
+    
     #plot_script()
    # plt.figure()
     #plt.plot(est)

@@ -6,6 +6,7 @@ from pyat.pyat.readwrite import read_modes
 from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks
 from swellex.ship.ship import load_track
 from swellex.audio.lse import AlphaEst
+from swellex.audio.config import get_proj_tones
 
 '''
 Description:
@@ -49,35 +50,49 @@ def load_ship_ests(source_depth, chunk_len, npy_name=None,r0=7703):
         ranges.append(new_r)
     return np.array(ranges), v_ests
 
-def sim_swellex(freq, source_depth, r, sensor_ind=0):
+def sim_swellex(freq, source_depth, r, sensor_ind=0, D=216.5):
     """
     Do a simulation at freq , source_depth, at ranges in 
     r (a 1d numpy array) at rcvr depth zr[sensor_ind]
     """
 
     """ Get the modes """
+
+    """ Get env builder """ 
     env_builder  =factory.create('swellex')
+
+    """ Call builder to get env instance """
     env = env_builder()
+
+    """ Add source params """
     zs = source_depth
-#    zr = np.array([94.125, 99.755, 105.38, 111.00, 116.62, 122.25, 127.88, 139.12, 144.74, 150.38, 155.99, 161.62, 167.26, 172.88, 178.49, 184.12, 189.76, 195.38, 200.99, 206.62, 212.25])
     zr = np.linspace(94.125, 212.25,64)
     zr = np.delete(zr, 21)
+    if D < np.max(zr):
+        zr = np.linspace(94.125, D-.05, 20)
     num_rcvrs = zr.size
+    env.add_source_params(freq, zs, zr)
+    
+    """ Add field params """ 
     dz =  5
-    zmax = 216.5
+    zmax = D
     dr = 1
     rmax = 10*1e3
-
-    folder = 'at_files/'
-    fname = 'swell'
-    env.add_source_params(freq, zs, zr)
     env.add_field_params(dz, zmax, dr, rmax)
+
+    """ Run KRAKEN to get the modes """
+    folder = 'at_files/'
+    fname = 'swell_' + str(int(D))
+    env.change_depth(D)
     p, pos = env.run_model('kraken', folder, fname, zr_range_flag=False)
     modes = read_modes(**{'fname':folder+fname+'.mod', 'freq':freq})
     krs = modes.k
+
+    """ Separate the source depth modal value from the receiver mode matrix """
     As = modes.phi[0,:]
     phi = modes.phi[1:,:] # throw out source depth
 
+    """ Use mode shapes and kr to get the higher resolution required of time domain sim"""
     field = np.zeros(r.size, dtype=np.complex128)
     for i in range(krs.size):
         term = As[i]*phi[sensor_ind,i]*np.exp(-complex(0,1)*krs[i].real*r)/np.sqrt(krs[i])
@@ -294,48 +309,60 @@ def comp_naive_demod(freq, chunk_len,sensor_ind):
         vals[i] = val
     return vals
 
-def make_mode_plot(freq, sd): 
+def save_mode_info(freq, sd): 
     field, modes = sim_swellex(freq, sd, np.linspace(1, 5, 100))
     s_strength = modes.phi[0,:]
-    modes.remove_source_pos(sd)
+    #modes.remove_source_pos(sd)
     np.save('npy_files/' + str(freq) + '_shapes.npy', modes.phi)
     np.save('npy_files/' + str(freq) + '_krs.npy', modes.k)
-    print('mean k', np.mean(modes.k))
-    print('expected gammas',  modes.k / np.mean(modes.k))
-    summ = 0
-    num_modes = modes.phi.shape[1]
-    total_stren = np.sum(s_strength)
-    for i in range(num_modes):
-        summ += modes.k[i] *s_strength[i] / total_stren
-    print('weighted mean k', summ)
-    print('expected gammas',  modes.k / summ)
-    zr = np.linspace(94.125, 212.25,64)
-    zr = np.delete(zr, 21)
-    print(num_modes)
-    fig, axs = plt.subplots(4,4,sharey='row',sharex='col')
-    plt.suptitle(str(freq) + ' Modes')
-    for i in range(num_modes):
-        curr_ax = axs[i//4, i%4]
-        curr_ax.plot(modes.phi[:,i], zr)
-        plt.gca().invert_yaxis()
-        if i%4 == 0:
-            curr_ax.set_ylabel('Depth (m)')
-            curr_ax.invert_yaxis()
-    return fig
+
+
+    field, modes = sim_swellex(freq, sd, np.linspace(1, 5, 100), D=180)
+    np.save('npy_files/' + str(freq) + '_shapes_180.npy', modes.phi)
+    np.save('npy_files/' + str(freq) + '_krs_180.npy', modes.k)
+    #print('mean k', np.mean(modes.k))
+    #print('expected gammas',  modes.k / np.mean(modes.k))
+    #summ = 0
+    #num_modes = modes.phi.shape[1]
+    #total_stren = np.sum(s_strength)
+    #for i in range(num_modes):
+    #    summ += modes.k[i] *s_strength[i] / total_stren
+    #print('weighted mean k', summ)
+    #print('expected gammas',  modes.k / summ)
+    #zr = np.linspace(94.125, 212.25,64)
+    #zr = np.delete(zr, 21)
+    #print(num_modes)
+    #fig, axs = plt.subplots(4,4,sharey='row',sharex='col')
+    #plt.suptitle(str(freq) + ' Modes')
+    #for i in range(num_modes):
+    #    curr_ax = axs[i//4, i%4]
+    #    curr_ax.plot(modes.phi[:,i], zr)
+    #    plt.gca().invert_yaxis()
+    #    if i%4 == 0:
+    #        curr_ax.set_ylabel('Depth (m)')
+    #        curr_ax.invert_yaxis()
+    return 
 
 freqs = [49, 64, 79, 94]
-freqs = [49]
+#freqs = [127]
+freqs = [109, 127, 145, 163, 198, 232, 280, 335, 385]
 for freq in freqs:
-    fig = make_mode_plot(freq, 9)
-    plt.savefig(str(freq) + '_modes.png')
-    plt.show()
+    save_mode_info(freq, 9)
+    #plt.savefig(str(freq) + '_modes.png')
+    #plt.show()
      
 freqs = [109, 127, 145, 163, 198, 232, 280, 335, 385]
 source_depth = 9
 #get_kr_ests(freqs, source_depth)
 
 freqs = [49, 64, 79, 94, 112, 130, 148, 166, 201, 235, 283, 338, 388]
+freqs = [53,69,85,101,117,133,149,165,181,197]
+freqs = get_proj_tones('arcmfp1_source15')
 source_depth = 54
+for freq in freqs:
+    save_mode_info(freq, 9)
+
+sys.exit(0)
 get_kr_ests([64], source_depth)
 freqs = [127]
 freqs = [335]

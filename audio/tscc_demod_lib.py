@@ -2,7 +2,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 from swellex.ship.ship import get_good_ests, good_time
 from swellex.audio.autoregressive import load_fest, esprit
-from swellex.audio.ts_comp import get_fname, get_bw, get_order
+from swellex.audio.ts_comp import get_nb_fname, get_bw, get_order
+from swellex.audio.config import get_proj_root, get_proj_tones
+from swellex.audio.lse import get_doppler_est_pickle_name, AlphaEst, load_lse_fest
 from scipy.signal import detrend, firwin, convolve, lombscargle, find_peaks, hilbert, cheby1, sosfilt, decimate
 from scipy.interpolate import interp1d
 import scipy.linalg as la
@@ -465,6 +467,30 @@ def get_relevant_fhat(fhat, err, start_min, end_min, delta_n):
     fhat = fhat[ind1:ind2]
     return fhat
 
+def get_relevant_vfhat(fhat, start_min, end_min, delta_n=1024):
+    """ Extract the best estimates of fhat
+        Input 
+        fhat - np array
+            1 by m array of frequency estimates
+        start_min - float
+            between 0 and 55
+        end_min - float
+            between 0 and 55
+        delta_n - int
+            number of samples between
+            adjacent fhat estimates
+            Should eventually package this into an
+            object with fhat and err but this is simple enough
+
+        Output 
+        fhat - fhat, restricted to start_min to end_min
+            and 1 dimensional
+    """
+    """ Restrict to domain of interest """
+    ind1, ind2 = int(start_min*60*1500/delta_n), int(end_min*60*1500/delta_n)+1
+    fhat = fhat[ind1:ind2]
+    return fhat
+
 def interp_fhat(fhat, start_min, end_min, delta_n):
     """
     Interpolate fhat onto the fs=1500 time grid 
@@ -473,7 +499,9 @@ def interp_fhat(fhat, start_min, end_min, delta_n):
     Output
     f_vals - interpolated fhat onto the fs=1500 grid
     """
-    fhat_tgrid = np.arange(start_min*60, end_min*60 + delta_n/1500, delta_n/1500)
+    fhat_tgrid = np.linspace(start_min*60+1/2*delta_n/1500, end_min*60 + 1/2*delta_n/1500, fhat.size)
+    fhat = np.insert(fhat, 0, fhat[1])
+    fhat_tgrid = np.insert(fhat_tgrid, 0, 0)
     f_func = interp1d(fhat_tgrid, fhat)
     time_domain = np.arange(start_min*60, end_min*60, 1/1500)
     f_vals = f_func(time_domain)
@@ -484,9 +512,9 @@ def rescale_f_vals(f_vals_curr, f_vals):
     f_vals *= ratio
     return f_vals
 
-def get_relevant_data(freq, start_min, end_min):
-    print(get_fname(freq))
-    x = np.load(get_fname(freq))
+def get_relevant_data(freq, start_min, end_min, proj_string='s5'):
+    print(get_nb_fname(freq, proj_string=proj_string))
+    x = np.load(get_nb_fname(freq, proj_string=proj_string))
     ind1, ind2 = int(start_min*60*1500), int(end_min*60*1500)
     x = x[:,ind1:ind2]
     print('len of ts (mins)', x.shape[1] / 1500/60)
@@ -567,11 +595,11 @@ def make_fvals_plot(freq, f_vals, f_vals_curr):
     return
 
 def restrict_vals(t, x, f_vals, f_vals_curr):
+    good_inds = np.array([i for i in range(len(t)) if good_time(t[i])])
     bad_inds = np.array([i for i in range(len(t)) if not good_time(t[i])])
-    t[bad_inds] = 0 
     x[:,bad_inds] = 0
-    f_vals[bad_inds] = 0
-    f_vals_curr[good_inds] = 0
+    f_vals[bad_inds] = np.mean(f_vals[good_inds])
+    f_vals_curr[bad_inds] = np.mean(f_vals_curr[good_inds])
     return t, x, f_vals, f_vals_curr
 
 def save_figure(domain, vals, title, save_string):
@@ -630,7 +658,7 @@ def fest_demod(freq, gammas, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=7
 
         """ Load data and restrict to start_min, end_min """
         t = np.arange(start_min*60, end_min*60, 1/1500)
-        x = get_relevant_data(freq, start_min, end_min)
+        x = get_relevant_data(freq, start_min, end_min, proj_string)
 
         """ If SVD flag is set, do a PCA filter """
         if svd==True:
@@ -755,7 +783,7 @@ def fest_baseband(freq, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, f
             t, x, f_vals, f_vals_curr = restrict_vals(t, x, f_vals, f_vals_curr)
 
         """ Save a visual of the data for checks"""
-        save_figure(t, x[0,:], 'Data on sensor1', str(freq) + '_dats.png')
+        save_figure(t, x[1,:], 'Data on sensor1', str(freq) + '_dats.png')
 
         """ Now scale the reference freq to the freq of interest """
         f_vals = rescale_f_vals(f_vals_curr, f_vals)
@@ -802,6 +830,109 @@ def fest_baseband(freq, ref_freq=385, lim_list=[[15,40]], N=1500, delta_n=750, f
         x.save(naive=naive)
     return
 
+def load_vest(freq, proj_string):
+    t, fest = load_lse_fest(freq, proj_str=proj_string)
+    return fest
+
+def get_mode_filter_name(freq, proj_str):
+    return 'npy_files/mode_filters/' + proj_str + '_' + str(freq) + '_mode_filter.npy'
+
+def vest_baseband(freq, ref_freq=385, lim_list=[[15,40]], proj_string='s5', deep=False, gamma=[1]):
+    """
+    Using phase unwrapping + linear fit with narrower filters
+    to correct for the Doppler broadening. 
+    Then estimate and compensate for range spreading. 
+    Then complex baseband the signal
+    freq - int
+        source freq
+    gammas - list of floats
+        gamma vals to search over
+    ref_freq - int
+        source freq to use f ests for to remove doppler
+    lim_list - list of lists of floats
+        each list element gives the start and end min of data chunk to look at
+        (default looks at one chunk from 15 min to 40 min)
+    N - int
+        length of data used in the instant. frequ. estimation
+    delta_n int
+        spacing of chunks used in inst. freq. estimation
+    proj_string - string
+        arcmfp1 or s5
+    deep - Bool
+        flag to denote whether the signal is from deep (54 m) source
+        by default it's assumed to be from the shallow source
+    gamma - list
+        list of gammas to scale phase corrections by
+    """
+    print('Reference freq', ref_freq)
+    for chunk_id, lim in enumerate(lim_list):
+        chunk_id = str(chunk_id)
+        print(chunk_id)
+        start_min = lim[0]
+        end_min = lim[1]
+        if end_min > 55:
+            raise ValueError('Sorry bud, didnt run lse on full data set')
+
+        """ Load, select, and interpolate the f ests for freq """
+
+        fhat = load_vest(freq, proj_string)
+        fhat = get_relevant_vfhat(fhat, start_min, end_min, 1024)
+        f_vals_curr = interp_fhat(fhat, start_min, end_min, 1024)
+        save_figure(None, f_vals_curr, 'fvals', str(freq) + '_fvals.png')
+
+        """ Repeat for the reference freq """
+        ref_fhat = load_vest(ref_freq, proj_string)
+        ref_fhat = get_relevant_vfhat(ref_fhat, start_min, end_min, 1024)
+        f_vals = interp_fhat(ref_fhat, start_min, end_min, 1024)
+
+        """ Load data and restrict to start_min, end_min """
+        t = np.arange(start_min*60, end_min*60, 1/1500)
+        x = get_relevant_data(freq, start_min, end_min, proj_string)
+
+
+        """ Zero out bad section of data """
+        if deep == True:
+            print('zeroing out bad boys')
+            t, x, f_vals, f_vals_curr = restrict_vals(t, x, f_vals, f_vals_curr)
+
+        """ Save a visual of the data for checks"""
+        save_figure(t, x[1,:], 'Data on sensor1', str(freq) + '_dats.png')
+
+        """ Now scale the reference freq to the freq of interest """
+        f_vals = rescale_f_vals(f_vals_curr, f_vals)
+
+        """ Save visual of f_vals """
+        make_fvals_plot(freq, f_vals, f_vals_curr)
+
+        """ Now estimate the phase noise due to accelerations """
+        mean_f = np.mean(f_vals)
+        dev_f = f_vals - mean_f 
+        save_figure(None, dev_f, 'dev f', str(freq) + '_dev_f.png')
+        Theta = get_Theta(dev_f)
+        save_figure(None, Theta, 'Theta', str(freq) + '_Theta.png')
+
+
+        """ Remove doppler broadening """
+        for g in gamma:
+            F = get_F(g, Theta) # this is the phase noise removal factor
+            data = x*F
+            
+            """ Demodulate """
+            lo = np.exp(complex(0,-1)*2*np.pi*mean_f*t)
+            vals = lo*data
+            print(vals.shape)
+        
+            """ Low pass filter/Decimate """
+            dec_factor = 150
+            baseband = decimate(vals, dec_factor, n = 128, ftype='fir')
+
+            dec_t = t[::150]
+            print(dec_t.size, baseband.shape)
+            fs = 1500/dec_factor
+            bb = Baseband(baseband, freq, ref_freq, mean_f, start_min, end_min, fs, dec_t, g)
+            bb.save(proj_string=proj_string)
+    return
+
 def make_fname(folder_root, gamma, chunk_id, suffix=''):
     fname = folder_root + str(gamma)[:6] + '_' + chunk_id + suffix +'.pickle'
     return fname
@@ -838,9 +969,17 @@ class DemodDat:
             with open(fname, 'wb') as f:
                 pickle.dump(self, f)
 
+def get_bb_name(freq, proj_string, gamma, mf=False):
+    folder_root = get_proj_root(proj_string)
+    if mf == False:
+        fname = folder_root + str(freq) + '_' + str(gamma)[:6] + '_baseband.pickle'
+    else:
+        fname = folder_root + str(freq) + '_' + str(gamma)[:6] + '_mf_baseband.pickle'
+    return fname
+
 class Baseband:
     """  Hold results of decimating one of the band time series"""
-    def __init__(self, arr_vals, freq, ref_freq, mean_f, start_min, end_min, fs, t):
+    def __init__(self, arr_vals, freq, ref_freq, mean_f, start_min, end_min, fs, t, gamma):
         self.x = arr_vals # nd array of downsampled vals
         self.freq = freq # signal source frequency
         self.ref_freq = ref_freq # freq band used to estimate the phase noise
@@ -850,12 +989,13 @@ class Baseband:
         self.fs = fs  # new sampling rate of downsampled data
         self.dt=  1/ fs
         self.t = t # the resampled time values associated with each point
+        self.gamma = gamma # 
    
-    def save(self,folder_root='/oasis/tscc/scratch/fakins/', overwrite=True, naive=False):
-        if naive == False:
-            fname = folder_root + str(self.freq) + '_baseband.pickle'
-        else:
-            fname = folder_root + str(self.freq) + '_naive_baseband.pickle'
+    def save(self,proj_string='s5', overwrite=True, mf=False):
+        freq= self.freq
+        gamma = self.gamma
+        fname = get_bb_name(freq, proj_string, gamma, mf)
+        print(fname)
         if overwrite == False:
             if os.path.isfile(fname):
                 print('Already been computed for . Overwrite is set to False, so returning without computing.')
@@ -863,8 +1003,41 @@ class Baseband:
             with open(fname, 'wb') as f:
                 pickle.dump(self, f)
 
-
+def get_ref_freq(freq, proj_str):
+    """ Set the deep flag if frequency
+    corresponds to a deep source band 
+    Choose reference freq estimates accordingly"""
+    if proj_str == 's5':
+        deep_freqs = [49, 64, 79, 94, 112, 130, 148, 166, 201, 235, 283, 338, 388]
+        if freq in deep_freqs:
+            deep = True
+            ref_freq = 388
+        else:
+            deep = False
+            ref_freq=385
+    if proj_str == 'arcmfp1':
+        deep = False
+        ref_freq = 197 
+    if proj_str == 'arcmfp1_source15':
+        deep = False
+        ref_freq = 748
+    return deep, ref_freq
 
 if __name__ == '__main__':
-    fest_baseband(49, ref_freq=388, lim_list=[[5, 30]], deep=True)
-    print('npothin to do')
+    proj_str = sys.argv[1]
+    start_min = float(sys.argv[2])
+    #start_min = 0.1
+    #end_min = 33.32
+    end_min = float(sys.argv[3])
+    lim_list=[[start_min, end_min]]
+    #freqs = get_proj_tones('arcmfp1')
+    freqs = get_proj_tones(proj_str)
+    gammas=np.arange(0.85, 1.15, .02)
+    gammas = np.array([1.0])
+    for freq in freqs:
+        #vest_baseband(freq, ref_freq=197, proj_string='arcmfp1', lim_list=lim_list, deep=False, gamma=gammas)
+        #vest_baseband(freq, ref_freq=197, proj_string='arcmfp1', lim_list=lim_list, deep=False, gamma=[0.0])
+        deep, ref_freq = get_ref_freq(freq, proj_str)
+        print('deep flag', deep)
+        vest_baseband(freq, ref_freq=ref_freq, proj_string=proj_str, lim_list=lim_list, deep=deep, gamma=gammas)
+        vest_baseband(freq, ref_freq=ref_freq, proj_string=proj_str, lim_list=lim_list, deep=deep, gamma=[0.0])

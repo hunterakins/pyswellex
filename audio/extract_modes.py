@@ -1,14 +1,16 @@
 import numpy as np
 import sys
 from matplotlib import pyplot as plt
-from swellex.audio.tscc_demod_lib import make_fname, DemodDat, Baseband
+from swellex.audio.config import get_proj_root, get_proj_tones
+from swellex.audio.tscc_demod_lib import make_fname, DemodDat, Baseband, get_bb_name, get_mode_filter_name
 from swellex.audio.fest_demod import parse_conf_dict
 from swellex.audio.autoregressive import esprit
 from swellex.audio.modal_inversion import ModeEstimates
+from swellex.ship.ship import good_time
 import json
 import pickle
 import os 
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, lombscargle
 '''
 
 Description:
@@ -45,7 +47,8 @@ def get_pow(est):
 def get_frs(freq, f_grid):
     krs = np.load('npy_files/' + str(freq) + '_krs.npy')
     krs = krs.real
-    v_est = -(freq - np.mean(f_grid)) / freq * 1500
+    v_est = -(freq - np.mean(f_grid)) / freq * 1480
+    print('vest', v_est)
     frs = (krs-np.mean(krs)) * v_est / 2 / np.pi + np.mean(f_grid)
     return frs
 
@@ -382,22 +385,24 @@ def compare_tracks(exp_id):
 
     return 
 
-def load_bb(freq,naive=False):
-    bb_name = str(freq) + '_baseband.pickle'
-    if naive == True:
-        bb_name = str(freq) + '_naive_baseband.pickle'
-    if bb_name not in os.listdir('pickles'):
-        remote_root = 'fakins@tscc-login.sdsc.edu:/oasis/tscc/scratch/fakins/'
-        scp_command = 'scp ' + str(remote_root) + bb_name + ' pickles/'
+def load_bb(freq,gamma=1.0, proj_string='s5'):
+    swell_dir = '/home/hunter/research/code/swellex/audio/'
+    bb_name = get_bb_name(freq, proj_string, gamma)
+    print(bb_name)
+    proj_root = get_proj_root(proj_string)
+    bb_name = bb_name[len(proj_root):]
+    print(bb_name)
+    if bb_name not in os.listdir(swell_dir + 'pickles/'+proj_string):
+        remote_root = 'fakins@tscc-login.sdsc.edu:' + proj_root
+        scp_command = 'scp ' + str(remote_root) + bb_name + ' ' + swell_dir + 'pickles/' + proj_string + '/'
         os.system(scp_command)
-    with open('pickles/' +bb_name, 'rb') as f:
+    with open(swell_dir+'pickles/' + proj_string + '/' +bb_name, 'rb') as f:
         bb = pickle.load(f)
     return bb
 
 def get_peak_num(freq, scaling=5):
     return int(freq / 49 * scaling) 
 
-   
 def get_modal_filter(modes, best_inds): 
     modes /= np.max(abs(modes), axis=0)
     mode_filter = np.linalg.pinv(modes)
@@ -419,15 +424,15 @@ def make_real(modes):
     modes = modes.real
     return modes
     
-def plot_bb_spec(freq):
+def plot_bb_spec(freq, gamma, proj_string='s5'):
     """ 
     A rip off of plot db spec but using the basebanded 
     data"""
-    zero_pad_fact  =5
-    bb = load_bb(freq)
+    zero_pad_fact  =8
+    bb = load_bb(freq, gamma, proj_string)
     print(bb.start_min, bb.end_min, bb.dt)
     est = bb.x
-    naive_bb = load_bb(freq, naive=True)
+    naive_bb = load_bb(freq, 0.0, proj_string)
     naive_est = naive_bb.x
 
     est = np.fft.fft(est, n = est.shape[1]*zero_pad_fact)
@@ -449,8 +454,8 @@ def plot_bb_spec(freq):
     f_grid += bb.mean_f
 
     df = f_grid[1]-f_grid[0]
-    i1 = f_grid.size //2 - int(.005 *freq/49 / df)
-    i2 = f_grid.size //2 + int(.005 *freq/49/ df)
+    i1 = f_grid.size //2 - int(.010 *freq/49 / df)
+    i2 = f_grid.size //2 + int(.010 *freq/49/ df)
     trunc_lims = slice(i1, i2)
     axis.plot(f_grid[trunc_lims], naive_db[trunc_lims], color='b',  alpha=.2)
     axis.plot(f_grid[trunc_lims], est_db[trunc_lims], color='g')
@@ -467,8 +472,9 @@ def plot_bb_spec(freq):
     axis.legend(['No phase', 'With phase'],prop={'size':8})
     axis.set_xlabel('Frequency (Hz)')
         #plt.legend(['Using 385 reference', 'Using 109 reference', 'Using no reference', 'Simulated kr, shifted using an assumed sound speed of 1530 m/s'])
-    num_peaks = get_peak_num(freq)
+    num_peaks = get_peak_num_pca(bb, cutoff=0.05)
     modes, best_inds = algorithm_2(f_grid, est, est_pow,num_peaks=num_peaks)
+    
     c_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
     c_list = c_list + c_list
     for i, ind in enumerate(best_inds):
@@ -477,12 +483,59 @@ def plot_bb_spec(freq):
         mode *= np.exp(complex(0,1) * - 1 * phase)
         mode /= np.max(abs(mode.real))
         mode *= .0005
-        axis.plot(mode.real + f_grid[ind], np.linspace(-15, 0, mode.size), color=c_list[i])
+        axis.plot(mode.real + f_grid[ind], np.linspace(-14, 0, mode.size), color=c_list[i], alpha=0.5)
         #axis.plot(mode.imag + f_grid[ind], np.linspace(-15, 0, mode.size))
-        axis.plot([f_grid[ind]]*mode.size, np.linspace(-15, 0, mode.size), color=c_list[i])
-    return modes
+        axis.plot([f_grid[ind]]*mode.size, np.linspace(-14, 0, mode.size), color=c_list[i], alpha=0.5)
+    return modes, fig
 
-def make_mode_plot(f_grid, est_pow, mode_filtered, trunc_lims, c_list, frs, best_inds, modes, num_peaks, zero_pad_fact, mode_inds):
+def plot_disp(freqs, gamma, proj_string='s5'):
+    """ Try and get a sense of the dispersion curve """
+    fig, axis = plt.subplots(1,1)
+    zero_pad_fact  =5
+    first= True
+    i = 0
+    for freq in freqs:
+        bb = load_bb(freq, gamma, proj_string)
+        print(bb.start_min, bb.end_min, bb.dt)
+        est = bb.x
+        est = np.fft.fft(est, n = est.shape[1]*zero_pad_fact)
+        est = np.fft.fftshift(est,axes=-1)
+        f_grid = np.fft.fftfreq(est.shape[1], bb.dt)
+        f_grid=np.fft.fftshift(f_grid)
+        f_grid += bb.mean_f
+        print(f_grid[1]-f_grid[0])
+        est_pow = get_pow(est)
+        est_pow = np.square(est_pow)
+        norm = np.max(est_pow)
+        est_db = est_pow / norm
+        est_db = 10*np.log10(est_db)
+        middle_ind = est_db.size // 2
+        est_db = est_db[middle_ind-200:middle_ind+200]
+        peak_inds, props = find_peaks(est_db, height=-10)
+        heights = props['peak_heights']
+        print(len(peak_inds), heights)
+        peak_inds = peak_inds[np.argsort(heights)[::-1]]
+        peak_inds = peak_inds[:10]
+        print(peak_inds)
+        print(est_db.size)
+        if first == True:
+            fgrid = f_grid[middle_ind-200:middle_ind+200]
+            fgrid -= np.mean(f_grid)
+            disp = np.zeros((est_db.size, len(freqs)))
+            first = False
+        disp[:,i] = est_db
+        for peak_ind in peak_inds:
+            axis.plot(freq, fgrid[peak_ind], 'r+')
+        i += 1
+    levels = np.linspace(-15, 0, 250)
+    cs = axis.contour(freqs,fgrid, disp, levels=levels)
+    fig.colorbar(cs)
+    axis.set_ylabel('Frequency difference from baseband (Hz)')
+    axis.set_xlabel('Source frequency (Hz)')
+    plt.show()
+
+def make_mode_plot(f_grid, est_pow, mode_filtered, trunc_lims, c_list, frs, best_inds, modes, zero_pad_fact, mode_inds):
+    num_peaks = modes.shape[1]
     est_pow /= np.max(est_pow)
     fig, axes = plt.subplots(2,1)
     axes[0].plot(f_grid[trunc_lims], est_pow[trunc_lims], color='k')
@@ -524,9 +577,10 @@ def get_grid(bb, f_est):
     f_grid += bb.mean_f
 
     df = f_grid[1]-f_grid[0]
-    i1 = f_grid.size //2 - int(.015 *freq/49 / df)
-    i2 = f_grid.size //2 + int(.015 *freq/49/ df)
+    i1 = f_grid.size //2 - int(.015 *bb.freq/49 / df)
+    i2 = f_grid.size //2 + int(.015 *bb.freq/49/ df)
     trunc_lims = slice(i1, i2)
+    print('FGRID', f_grid[trunc_lims][0], f_grid[trunc_lims][1])
     return f_grid, trunc_lims
 
 def plot_est_psd(f_grid, est_db, frs, trunc_lims):
@@ -539,24 +593,51 @@ def plot_est_psd(f_grid, est_db, frs, trunc_lims):
     axis.set_xlabel('Frequency (Hz)')
     return fig, axis
 
-def correct_range_spreading(bb):
+def correct_range_spreading(bb, proj_str='s5'):
     """ Correct range spreading of basebanded
     data """
-    depth_avg_pow = np.sum(np.square(abs(bb.x)), axis=0)
-    depth_avg_pow /= depth_avg_pow[0]
-    H = np.ones((bb.t.size, 2))
-    H[:, 1] = np.square(bb.t)
-    inv = np.linalg.pinv(H)
-    p = inv@depth_avg_pow
-    X = p[0]
-    alpha = p[1]
-    forward = H@p
-    r = 1/forward
-    sqrt_r = np.sqrt(r)
-    bb.x = bb.x*sqrt_r
+    t = bb.t
+    """ s5 is an approaching series """
+    if proj_str == 's5':
+        good_inds = [i for i in range(bb.x.shape[1]) if good_time(t[i])]
+        good_t =t[good_inds]
+        good_x = bb.x[:,good_inds]
+        depth_avg_pow = np.sum(np.square(abs(good_x)), axis=0)
+        depth_avg_pow /= depth_avg_pow[0]
+        H = np.ones((good_t.size, 2))
+        H[:, 1] = np.square(good_t)
+        inv = np.linalg.pinv(H)
+        p = inv@depth_avg_pow
+        X = p[0]
+        alpha = p[1]
+        """ Now do for whole record """
+        H = np.ones((t.size, 2))
+        H[:,1] = np.square(t)
+        forward = H@p
+        r = 1/forward
+        sqrt_r = np.sqrt(r)
+        #plt.plot(sqrt_r)
+        #plt.show()
+        bb.x = bb.x*sqrt_r
+    """ arcmfp1 is moving away """
+    if proj_str=='arcmfp1' or proj_str == 'sim1':
+        x = bb.x
+        depth_avg_pow = np.sum(np.square(abs(x)), axis=0)
+        depth_avg_pow /= depth_avg_pow[0]
+        r = 1/depth_avg_pow
+        """ Fit inverse poewr to a line """
+        H = np.ones((t.size, 2))
+        H[:, 1] = t
+        p = np.linalg.pinv(H) @ r
+        r0 = p[0]
+        v = p[1]
+        r = r0 + v*t
+        sqrt_r = np.sqrt(r)
+        bb.x = bb.x*sqrt_r
+        print(r0, v)
     return
 
-def get_peak_num_pca(bb):
+def get_peak_num_pca(bb, cutoff=.01):
     """
     Use the eigenvalues to estimate numnber of 
     modes """
@@ -564,7 +645,7 @@ def get_peak_num_pca(bb):
     cov = np.cov(est)
     w, v = np.linalg.eigh(cov)
     w /= np.max(w)
-    num_peaks = len([x for x in w if x > .01])
+    num_peaks = len([x for x in w if x > cutoff])
     peak_num_list = [num_peaks]
     print('num_peaks', num_peaks)
     return num_peaks
@@ -584,27 +665,67 @@ def get_f_est(bb, zero_pad_fact):
     est_db = 10*np.log10(est_db)
     return f_est, est_pow, est_db
 
-def get_modal_peaks(freq):
-    """ Load up basebanded data and get incoherent sum
-    psd estimate """
+def handpick(modes, freq, proj_string):
+    """
+    custom mode choosing ... 
+    """
+    if freq == 53:
+        modes = np.delete(modes, 3, axis=1)
+    return modes
+
+def find_doubles(mode_corr, mode_pows):
+    """
+    Take in the matrix of modal correlation coefficients
+    Go through it and pick out pairs of indices that 
+    are likely the same mode 
+    """ 
+    num_peaks = mode_corr.shape[0]
+    doubles = []
+    for i in range(num_peaks-1):
+        if mode_corr[i, i+1] > 0.70:
+            if mode_pows[i] > mode_pows[i+1]:
+                doubles.append(i+1)
+            else:
+                doubles.append(i)
+    return doubles
+
+def remove_doubles_modes(modes, best_inds, mode_pows):
+    mode_corr = abs(np.corrcoef(modes.T))
+    doubles = find_doubles(mode_corr, mode_pows)
+    print('doubles', doubles)
+    good_inds = [i for i in range(modes.shape[1]) if i not in doubles]
+    print(good_inds)
+    modes =  modes[:,good_inds]
+    best_inds = best_inds[good_inds]
+    return modes, best_inds
+
+def get_color_list():    
+    """ Get an iterable of color strings for plotting """
     c_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
     c_list = c_list + c_list
-    zero_pad_fact  =7
-    bb = load_bb(freq)
-    start_min = 5
-    start_ind = int(60*start_min / bb.dt)
-    bb.x = bb.x[:,start_ind:]
-    bb.t = bb.t[start_ind:]
-    print('Time interval', bb.start_min, bb.end_min)
+    return c_list
+
+def get_modal_peaks(freq, gamma, proj_string='s5',fig_count=0):
+    """ Load up basebanded data and get incoherent sum
+    psd estimate """
+    c_list = get_color_list()
+
+    zero_pad_fact  =6
+
+    """ Load up basebanded data """ 
+    bb = load_bb(freq, gamma, proj_string)
+    bb.x=bb.x[:,10:]
+    bb.t =bb.t[10:]
+    print('Time interval (mins)', bb.start_min, bb.end_min)
 
     """ Deal with range spreading """
-    correct_range_spreading(bb)
+    correct_range_spreading(bb, proj_string)
 
     """ Use eigenvalues of cov mat to estimate number 
     of modal peaks to search for """
-    num_peaks = get_peak_num_pca(bb)
+    num_peaks = get_peak_num_pca(bb, cutoff=0.05)
+    print('Num peaks searched for ', num_peaks)
     peak_num_list = [num_peaks]
-    #peak_num_list = [num_peaks - 1, num_peaks, num_peaks + 1]
   
     """ Estimate PSD by incoh sum """ 
     f_est, est_pow, est_db = get_f_est(bb, zero_pad_fact)
@@ -616,46 +737,77 @@ def get_modal_peaks(freq):
     """ Fetch simulated doppler shifted modes and an estimate of
     how close they should be """
     frs = get_frs(freq, f_grid)
+    #s_frs = get_shallow_frs(freq, f_grid)
+    print(frs)
     min_space = np.min(abs(frs[1:] - frs[:-1]))
     distance = int(min_space/df)
    
     """ Plot incoh sum if desired """ 
-    fig, axis = plot_est_psd(f_grid, est_db, frs, trunc_lims)
-    plt.show()
-    """ Use incoh_sum to get moe estimates """
+    #fig, axis = plot_est_psd(f_grid, est_db, frs, trunc_lims)
+
+    """ Use incoh_sum to get mode estimates """
     #num_peaks = get_peak_num(freq, scaling)
     v_hats, c_hats = [], []
     for num_peaks in peak_num_list:
         modes, best_inds = algorithm_2(f_grid, f_est, est_pow,num_peaks=num_peaks,distance=distance)
-        mode_filter = get_modal_filter(modes, best_inds)
+        mode_pows = est_pow[best_inds]
+        modes = make_real(modes)
+        modes, best_inds = remove_doubles_modes(modes, best_inds, mode_pows)
+        
+        if gamma == 1:
+            mode_filter = get_modal_filter(modes, best_inds)
+            mf_name = get_mode_filter_name(freq, proj_string)
+            np.save(mf_name, mode_filter)
+        else:
+            mode_filter = np.load(get_mode_filter_name(freq, proj_string))
+
+        num_peaks = mode_filter.shape[0]
+        print('np', num_peaks)
+            
 
         """ Get the f_r from the filtered modes """
-        modes = make_real(modes)
         start_min = 0
         start_ind = int(60*start_min / bb.dt)
         bb.x = bb.x[:,start_ind:]
         mode_filtered = mode_filter@bb.x
-        for i in range(num_peaks):
-            plt.plot(bb.t,mode_filtered[i,:])
-        plt.show()
         mode_inds = get_mode_inds(best_inds, mode_filtered, zero_pad_fact)
-        make_mode_plot(f_grid, est_pow, mode_filtered, trunc_lims, c_list, frs, best_inds, modes, num_peaks, zero_pad_fact, mode_inds)
-        plt.show()
-
         fr = f_grid[mode_inds]
         shape_list = [modes[:,i] for i in range(num_peaks)]
         """ Throw out first few modes since WKB doesn't work well"""
         #fr = fr[:-1]
         #shape_list = shape_list[:-1]
-        me = ModeEstimates(freq, shape_list, fr, interp_bad_el=True)
+        me = ModeEstimates(freq, shape_list, fr, interp_bad_el=False, proj_string=proj_string)
         v_hat, c_hat = run_inv_mod(me)
+        rep_mat = me.get_replica_mat()
+        #mode_filter = rep_mat.T
+        #mode_filtered= mode_filter@bb.x
+       
+        for i in range(num_peaks):
+            fig, axes = plt.subplots(2,1)
+            axes[1].plot(rep_mat[:,i])
+            axes[1].plot(mode_filter.T[:,i])
+            axes[0].set_ylabel('Basebanded modal channel')
+            axes[0].plot(bb.t/60,mode_filtered[i,:].real, alpha=0.8, color=c_list[i])
+            #axes[0].plot(bb.t/60,mode_filtered[i,:].imag, alpha=0.8, color=c_list[i])
+            axes[1].set_ylabel('Mode amplitude')
+            plt.suptitle('Mode ' + str(i+1) + ' , gamma = ' + str(gamma))
+            axes[0].set_xlabel('Time (min)')
+            axes[1].set_xlabel('Receiver index')
+            fig.tight_layout()
+            plt.savefig('pics/' + str(freq) + '/' + str(i) + '_' + str(fig_count).zfill(3) + '.png')
+            #plt.close(fig)
+        sample_baseband = bb.x[0,:]
+        axes[0].plot(bb.t/60, sample_baseband.real)
+
+        make_mode_plot(f_grid, est_pow, mode_filtered, trunc_lims, c_list, frs, best_inds, mode_filter.T, zero_pad_fact, mode_inds)
+        #plt.show()
         #me.compare_forward_model()
         #me.show_kz_match()
         #plt.plot(me.kzs, me.fi)
         #plt.plot(me.best_kzs, me.best_fi, color='r')
         #plt.show()
-        v_hats.append(v_hat)
-        c_hats.append(c_hat)
+        #v_hats.append(v_hat)
+        #c_hats.append(c_hat)
     print(v_hats, c_hats)
     return v_hats, c_hats, peak_num_list
     
@@ -711,11 +863,25 @@ if __name__ == '__main__':
     #run_multiband_inverse()
     c_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
     c_list = c_list + c_list
+    c_list = c_list + c_list
     i = 0 
     freqs = [49, 64, 79, 94, 109, 130, 145, 127, 145, 148, 163, 166]
+    proj_str = 'arcmfp1'
+    #proj_str ='s5_deep'
+    freqs = get_proj_tones(proj_str)
+    #plot_disp(freqs, 1.0)
+    #plt.show()
+    #freqs = [freqs[0]]
     for freq in freqs:
-        get_modal_peaks(freq)
-        i += 1
-    plt.legend([str(x) for x in freqs])
-    plt.show()
-
+        gammas = np.arange(0.85, 1.15, 0.02)
+        gammas = np.array([1.0])
+        i = 0
+        for g in gammas:
+            #get_modal_peaks(freq,g, proj_string=proj_str, fig_count =i)
+            #plt.show()
+            modes, fig = plot_bb_spec(freq, g, proj_str)
+            fig.suptitle(str(g)[:4])
+            plt.savefig('pics/' + str(freq) + '/' + str(i).zfill(3) + '.png')
+            plt.show()
+            #plt.close(fig)
+            i += 1

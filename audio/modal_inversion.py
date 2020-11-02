@@ -4,6 +4,7 @@ from scipy.signal import hilbert
 from scipy.interpolate import interp1d
 from swellex.audio.kay import diff_seq, undiff
 import  numpy.polynomial.legendre as le
+from swellex.audio.config import get_proj_zr
 
 
 '''
@@ -135,7 +136,7 @@ def unwrap2(mode_shape):
     return p_est
 
 class ModeEstimates:
-    def __init__(self, freq, shape_list, fi=[], interp_bad_el=False):
+    def __init__(self, freq, shape_list, fi=[], interp_bad_el=False, proj_string='s5'):
         self.freq = freq
         self.num_ests = len(shape_list)
         inds = np.argsort(fi)
@@ -144,10 +145,9 @@ class ModeEstimates:
         fi = fi[::-1]
         shape_list = shape_list[::-1]
         self.fi = fi
-        zr = np.linspace(94.125, 212.25,64)
-        zr = np.delete(zr, 21)
+        zr = get_proj_zr(proj_string)
         if interp_bad_el == True:
-            tmp = np.linspace(94.125, 212.25,64)
+            tmp = np.linspace(94.125+1.875, 212.25,64)
             for i in range(len(shape_list)):
                 shapef_real= interp1d(zr, shape_list[i].real.reshape(zr.size))
                 shapef_imag= interp1d(zr, shape_list[i].imag.reshape(zr.size))
@@ -317,6 +317,17 @@ class ModeEstimates:
             i += 1
         plt.show()
 
+    def get_replica_mat(self):
+        new_inds = np.argsort(self.best_kzs)
+        kzs = self.best_kzs[new_inds]
+        phis = self.best_phis[new_inds]
+        i = 0
+        replica_mat = np.zeros((self.zr.size, kzs.size))
+        for i in range(self.num_ests):
+            replica = np.cos(phis[i] + kzs[i]*self.zr)
+            replica_mat[:,i] = replica
+        return replica_mat
+
     def run_inv(self):
         kzs = self.best_kzs
         fi = self.best_fi
@@ -346,7 +357,6 @@ class ModeEstimates:
         plt.plot(np.square(kzs))
         plt.plot(kz_hats)
         plt.show()
-        
 
     def remove_bad_matches(self):
         kzs = np.array(self.kzs)

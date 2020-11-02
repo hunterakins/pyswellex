@@ -5,7 +5,7 @@ from scipy.linalg import solve_toeplitz, toeplitz
 import scipy.linalg as la
 import sys
 import time 
-from swellex.audio.ts_comp import get_fname
+from swellex.audio.ts_comp import get_nb_fname
 
 '''
 Description:
@@ -385,17 +385,12 @@ def run_esprit(freq, p, model_order, N, delta_n, alt=False):
             spacing of windows
     """
     now = time.time()
-    x = np.load(get_fname(freq), alt=alt)
-    print(get_fname(freq))
+    x = np.load(get_nb_fname(freq, alt=alt))
+    print(get_nb_fname(freq, alt=alt))
     #x = np.load('npy_files/'+str(freq) + '_short.npy') #this is data from 35 to 40 minutes into S5
     #x = np.load('npy_files/'+str(freq) + '_short_hilb.npy') #this is data from 35 to 40 minutes into S5
-    print('loading dats')
-    print(time.time() - now)
-    now = time.time()
     #x = x[:, :15000]
     x = hilbert(x)
-    np.save('/oasis/tscc/scratch/fakins/'+str(freq) + '_ts_hilb.npy', x)
-    print('hilbert', time.time()-now)
     now = time.time()
    
     num_to_keep = 5
@@ -480,12 +475,12 @@ def load_fest(freq, N=3000, delta_n=1500,tscc=False):
     Load the frequency estimate for freq for the given interval and spacing N and delta_n
     """
     if tscc == True:
-        root = '/oasis/tscc/scratch/fakins/fests/'+str(freq) + '_' + str(N) + '_' + str(delta_n) + '_' 
+        root = '/oasis/tscc/scratch/fakins/fests/'+str(freq) + '_' + str(N) + '_' + str(delta_n) + '_fhat' 
     else:
-        root = 'npy_files/fests/'+str(freq) + '_' + str(N) + '_' + str(delta_n) + '_' 
-    fhat = np.load(root+'fhat.npy')
-    err = np.load(root+'fhat_err.npy')
-    amp = np.load(root+'fhat_amp.npy')
+        root = 'npy_files/fests/'+str(freq) + '_' + str(N) + '_' + str(delta_n) + '_fhat' 
+    fhat = np.load(root+'.npy')
+    err = np.load(root+'_err.npy')
+    amp = np.load(root+'_amp.npy')
     return fhat, err, amp
 
 def check_fest(freq, N, delta_n):
@@ -500,17 +495,17 @@ def check_fest(freq, N, delta_n):
     best_inds_err = np.argmin(y, axis=0)
     best_inds_amp = np.argmin(z, axis=0)
     i = np.linspace(0, best_inds_err.size-1, best_inds_err.size,dtype=int)
-    fig, axes = plt.subplots(3,1)
+    fig, axis = plt.subplots(1,1)
+    axes = [axis]
     t = i*delta_n/1500 / 60
     axes[0].plot(t, x[best_inds_err,i],color='b')
-    axes[0].plot(t, x[best_inds_amp,i],color='g')
-    axes[1].plot(t, y[best_inds_err, i], color='b')
-    axes[2].plot(t, z[best_inds_amp, i], color='g')
+    #axes[0].plot(t, x[best_inds_amp,i],color='g')
     fig.suptitle(str(freq))
-    fig1, axes = plt.subplots(2,1)
-    axes[0].acorr(x[best_inds_amp, i], detrend=detrend)
-    axes[1].acorr(x[best_inds_err, i], detrend=detrend)
-    fig1.suptitle(str(freq))
+    #fig1, axes = plt.subplots(2,1)
+    #axes[0].acorr(x[best_inds_amp, i], detrend=detrend)
+    #axes[1].acorr(x[best_inds_err, i], detrend=detrend)
+    #fig1.suptitle(str(freq))
+    return fig, axes, t
     
 def comp_fest(freqs, N, delta_n):
     """ Compare to walker?  """
@@ -573,6 +568,28 @@ def comp_two_fest(freqs, N, delta_n):
     #axes1.acorr(x[best_inds_amp, i], detrend=detrend)
     axes1.plot(i, ref_x - curr_x*ratio)
 
+def comp_filter():
+    """
+    I ran ESPRIT on 385 with .2 Hz bandwidth
+    and .1 
+    Compare the results 
+    """
+    freq = 385
+    i1 = int(6.5*60*1500/750)
+    i2 = int(60*60*1500/750)
+    narr_x, y, z = load_fest(freq, N=1500, delta_n=750)
+    best_inds_err = np.argmin(y, axis=0)
+    i = np.linspace(0, best_inds_err.size-1, best_inds_err.size, dtype=int)
+    narr_x = narr_x[best_inds_err,i]
+    root = 'npy_files/fests/385_1500_750_fhat' 
+    x = np.load(root+'_orig.npy')
+    y = np.load(root+'_err_orig.npy')
+    z = np.load(root+'_amp_orig.npy')
+    best_inds_err = np.argmin(y, axis=0)
+    x = x[best_inds_err,i]
+    plt.plot(x[i1:i2])
+    plt.plot(narr_x[i1:i2])
+    plt.show()
 
 if __name__ == '__main__':
     freq = int(sys.argv[1])
@@ -582,7 +599,7 @@ if __name__ == '__main__':
     p = 1 
     M = 40
 
-    run_esprit(freq, p, M, N, delta_n, alt=True)
+    run_esprit(freq, p, M, N, delta_n, alt=False)
 
 #plt.figure()
 #test_esprit(freq,p,M,T)

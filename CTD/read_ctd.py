@@ -91,10 +91,16 @@ def get_res_matrix(u,s, dropoff):
 
 
 if __name__ == '__main__':
-    z, ssp = parse_prn('/home/hunter/data/swellex/ctds/i9601.prn')
+    z, ssp = parse_prn('/home/hunter/data/swellex/ctds/i9605.prn')
+    print(1/np.mean(1/ssp))
     print(np.mean(ssp))
-    print(ssp)
+    z_inds = [i for i in range(len(z)) if z[i] > 94.125 and z[i] < 216]
+    print(np.mean(ssp[z_inds]))
+#    print(ssp)
     plt.plot(ssp, z)
+    plt.gca().invert_yaxis()
+    plt.show()
+    plt.plot(ssp[z_inds], z[z_inds])
     plt.gca().invert_yaxis()
     plt.show()
     zs, ssps = parse_swellex_ctds('/home/hunter/data/swellex/ctds')

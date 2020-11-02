@@ -956,8 +956,6 @@ def collect_brackets(freqs):
             
 
 if __name__ == '__main__':
-    freqs= [49, 64, 79, 94, 109, 112,127, 130, 148, 166, 201, 235, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
-    freqs= [127, 130, 148, 166, 201, 283, 338, 388, 145, 163, 198,232, 280, 335, 385] 
             
     freq = sys.argv[1]
     chunk_len = int(sys.argv[2])
@@ -968,7 +966,7 @@ if __name__ == '__main__':
     print('Generating brackets for frequencies ', freqs, ' with chunks of ', chunk_len, ' using a variance limit of ', var)
     #auto_write_indices(cpa=True)
     auto_gen_brackets(freqs, chunk_len, var, proj_string=proj_string)
-    #check_pest(freq, proj_dir=proj_string)
+    check_pest(freq, proj_dir=proj_string)
     #check_pest1()
 #    check_bracks()
 #    dats = get_pest(49,1)

@@ -2,7 +2,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy.signal import hilbert, firwin,convolve, detrend
 from scipy.ndimage import convolve1d
-from swellex.audio.config import get_proj_root, get_full_ts_name
+from swellex.audio.config import get_proj_root, get_full_ts_name, get_fc
 import sys
 #import pickle 
 
@@ -77,21 +77,6 @@ def get_order(freq):
     N = np.power(2, int(np.log2(N))+1)
     return N
 
-def get_fc(freq, proj_string):
-    """
-    Get the center doppler shifted frequency
-    So this can be made way more complicated...
-    we're gonna just assume a velocity around
-    2.4 (so this will only work on the first 35 mins of data or so)
-    I account for possible errors by increasing the bandwidth
-    I can refine this later once I perform the frequency estimations
-    """
-    if proj_string == 's5':
-        fc = freq*(1 + 2.4/1500)
-    if proj_string == 'arcmfp1':
-        fc= freq*(1 - 2.5/1500)
-    return fc
-    
 def get_nb_fname(freq, proj_string='s5'):    
     order = get_order(freq)
     B = get_bw(freq)

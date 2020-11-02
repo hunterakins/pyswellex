@@ -36,37 +36,60 @@ freq = 127
 dz, zmax, dr, rmax = 2, 216.5, 1, 1.2*1e3
 env.add_source_params(freq, zs, zr)
 env.add_field_params( dz, zmax, dr, rmax)
-prefix = '/home/hunter/research/code/env/env/ctds/'
-prn_files = os.listdir(prefix)
-prn_files = [prefix + x for x in prn_files if x[-3:] == 'prn']
+#prefix = '/home/hunter/research/code/env/env/ctds/'
+#prn_files = os.listdir(prefix)
+#prn_files = [prefix + x for x in prn_files if x[-3:] == 'prn']
 folder = 'at_files/'
 fname = 'swell'
+#for p in prn_files:
+#    env.change_cw(p)
+#    env.run_model('kraken', folder, fname, zr_range_flag=False)
+#    modes = read_modes(**{'fname':folder+fname+'.mod', 'freq':freq})
+#    krs = modes.k
+#    num_modes = len(krs)
+#    print('num_modes', num_modes)
+#    dom = np.linspace(1, num_modes, num_modes)
+#    plt.scatter(dom, krs)
+#plt.show()
 
 """ Looking at depth effect """
 env.run_model('kraken', folder, fname, zr_range_flag=False)
 modes = read_modes(**{'fname':folder+fname+'.mod', 'freq':freq})
 krs = modes.k
+print('Spread', (np.max(krs)- np.min(krs))*2.4 /(2*np.pi))
+print('min spacing', np.min(abs(krs[1:] - krs[:-1]))*2.4 /(2*np.pi))
+print('max spacing', np.max(abs(krs[1:] - krs[:-1]))*2.4 /(2*np.pi))
 print('Original average kr', np.mean(krs))
 num_modes = len(krs)
 print('num_modes', num_modes)
 dom = np.linspace(1, num_modes, num_modes)
 fig,axes = plt.subplots(2,1)
-plt.suptitle('Effective of depth change on kr (D changes from 216.5 m to 190 m)')
 axes[1].set_xlabel('Mode number')
 axes[0].set_ylabel('kr (1/m)')
 axes[0].scatter(dom, krs)
 krs_orig = krs
+omega_m = 2*np.pi*freq + krs_orig*2.4
+print('omega_s', omega_m)
+print('freq_nm', omega_m / 2/np.pi)
+
+delta_f = -(krs[1:] - krs[:-1]) *2.4 / (2 * np.pi)
 
 """ Look at weighted average kr """
-s_strength = modes.phi[0,:]
-summ = 0
+s_strength = abs(modes.phi[0,:])
+print(s_strength)
 num_modes = modes.phi.shape[1]
 total_stren = np.sum(s_strength)
-for i in range(num_modes):
-    summ += modes.k[i] *s_strength[i] / total_stren
-print('weighted mean k', summ)
+summ = np.sum(modes.k.real*s_strength)
+print(np.sum(s_strength) / total_stren)
+print('weighted mean k', summ/total_stren)
+plt.figure()
+print((omega_m[:-1] - omega_m[1:]) / 2 /np.pi)
+plt.scatter(np.linspace(0, krs.size-2, krs.size-1), (omega_m[:-1] - omega_m[1:]) / 2 /np.pi, color='r')
+plt.scatter(np.linspace(0, krs.size-2, krs.size-1), delta_f)
+plt.show()
 
 D = 180
+plt.suptitle('Effective of depth change on kr (D changes from 216.5 m to ' +str(D)+' m)')
 env.change_depth(D)
 fname = 'wonky'
 zr = np.arange(94.125, D-2, 0.5)
@@ -77,35 +100,24 @@ env.add_field_params( dz, zmax, dr, rmax)
 env.run_model('kraken', folder, fname, zr_range_flag=False)
 modes = read_modes(**{'fname':folder+fname+'.mod', 'freq':freq})
 krs = modes.k
-print('180m depth average kr', np.mean(krs))
-s_strength = modes.phi[0,:]
-summ = 0
+print(D, 'm average kr', np.mean(krs))
+s_strength = abs(modes.phi[0,:])
 num_modes = modes.phi.shape[1]
 total_stren = np.sum(s_strength)
-for i in range(num_modes):
-    summ += modes.k[i] *s_strength[i] / total_stren
-print('weighted mean k', summ)
+print('total strenght', total_stren)
+summ = np.sum(modes.k.real*s_strength)
+print('weighted mean k', summ/total_stren)
 num_modes = len(krs)
 dom = np.linspace(1, num_modes, num_modes)
 axes[0].scatter(dom, krs)
 diffs= krs_orig[:len(krs)]-krs
-axes[1].scatter(dom, diffs)
+axes[1].scatter(dom, 2.4*diffs/2/np.pi)
 axes[1].set_ylim([0, np.max(diffs)*1.1])
-axes[1].set_ylabel('Change in kr')
+axes[1].set_ylabel('Change in frequency (Hz)')
 plt.show()
+
+print('LOOOOK HERE', (np.max(krs) - np.min(krs)) * 2.4 / (2*np.pi))
 
 """ Looking at ctd effect"""
 """ Conclusion is that ctd effect is minimal """
-"""
-for p in prn_files:
-    env.change_cw(p)
-    env.run_model('kraken', folder, fname, zr_range_flag=False)
-    modes = read_modes(**{'fname':folder+fname+'.mod', 'freq':freq})
-    krs = modes.k
-    num_modes = len(krs)
-    print('num_modes', num_modes)
-    dom = np.linspace(1, num_modes, num_modes)
-    plt.scatter(dom, krs)
-plt.show()
-"""
 
